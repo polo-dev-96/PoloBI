@@ -5,6 +5,9 @@ server/public
 vite.config.ts.*
 *.tar.gz
 
+# A faixa ambiente grande é enviada diretamente ao servidor de produção.
+/client/public/music/no-rush-vintage-noir-jazz.mpeg
+
 # Environment files (contain sensitive API keys)
 .env
 .env.local

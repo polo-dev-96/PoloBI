@@ -10,11 +10,7 @@ export const AMBIENT_VOLUME = 0.16;
 export const AMBIENT_DUCKED_VOLUME = 0.02;
 
 export const AMBIENT_TRACKS = [
-  "/music/ambient/01-winter-wind.mp3",
-  "/music/ambient/02-majestic.mp3",
-  "/music/ambient/03-lonely-in-the-bar.mp3",
-  "/music/ambient/04-just-walk.mp3",
-  "/music/ambient/05-space-bird.mp3",
+  "/music/no-rush-vintage-noir-jazz.mpeg",
 ] as const;
 
 export const getNextAmbientTrackIndex = (currentIndex: number): number =>
@@ -69,10 +65,11 @@ export function useAmbientMusic({
   }, []);
 
   useEffect(() => {
-    const audio = new Audio(AMBIENT_TRACKS[0]);
+    const audio = new Audio();
     audio.loop = false;
-    audio.preload = "auto";
+    audio.preload = "none";
     audio.volume = AMBIENT_VOLUME;
+    audio.src = AMBIENT_TRACKS[0];
 
     const handlePlay = () => {
       consecutiveFailuresRef.current = 0;

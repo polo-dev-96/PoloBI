@@ -48,6 +48,8 @@ const MUSIC_SONGS = [
     { name: 'Foo Fighters - Everlong', paths: ['/music/foo-fighters-everlong.mp3'] },
     { name: "Gerry & The Pacemakers - You'll Never Walk Alone", paths: ['/music/whatsapp-audio-2026-07-21-174148.mp3', '/music/whatsapp-audio-2026-07-21-174148.mpeg'] },
     { name: 'Avenged Sevenfold - Hail to the King', paths: ['/music/whatsapp-audio-2026-07-21-174149.mp3', '/music/whatsapp-audio-2026-07-21-174149.mpeg'] },
+    { name: "Bon Jovi - It's My Life", paths: ['/music/bon-jovi-its-my-life.mpeg'] },
+    { name: 'Metallica - Master of Puppets', paths: ['/music/metallica-master-of-puppets.mpeg'] },
 ];
 
 type BreakPhase = 'idle' | 'queued' | 'break' | 'return';

@@ -10,15 +10,11 @@ import {
 
 test("mantém a ordem definida para a playlist ambiente", () => {
   assert.deepEqual(AMBIENT_TRACKS, [
-    "/music/ambient/01-winter-wind.mp3",
-    "/music/ambient/02-majestic.mp3",
-    "/music/ambient/03-lonely-in-the-bar.mp3",
-    "/music/ambient/04-just-walk.mp3",
-    "/music/ambient/05-space-bird.mp3",
+    "/music/no-rush-vintage-noir-jazz.mpeg",
   ]);
 });
 
-test("reinicia a playlist ambiente depois da quinta faixa", () => {
+test("repete a faixa ambiente ao terminar", () => {
   const playedIndexes: number[] = [];
   let currentIndex = 0;
 
@@ -27,7 +23,7 @@ test("reinicia a playlist ambiente depois da quinta faixa", () => {
     currentIndex = getNextAmbientTrackIndex(currentIndex);
   }
 
-  assert.deepEqual(playedIndexes, [0, 1, 2, 3, 4, 0]);
+  assert.deepEqual(playedIndexes, [0, 0]);
 });
 
 test("mantém a música em 16% e reduz para 2% durante a narração", () => {
