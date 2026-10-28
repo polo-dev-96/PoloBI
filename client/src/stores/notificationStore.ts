@@ -129,10 +129,22 @@ const normalizeOperatorName = (value: string): string =>
   value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("pt-BR");
 
 const SPECIAL_SPOKEN_OPERATOR_NAMES: Readonly<Record<string, string>> = {
-  "celio carvalho": "Dom Senhor Célio Carvalho",
-  "dom senhor celio carvalho": "Dom Senhor Célio Carvalho",
-  "abraao lima": "Dom Abraão Lima (Idoso Carismático)",
-  "dom abraao lima (idoso carismatico)": "Dom Abraão Lima (Idoso Carismático)",
+  celio: "Flamenguista Dom Célio Carvalho",
+  "celio carvalho": "Flamenguista Dom Célio Carvalho",
+  "dom senhor celio carvalho": "Flamenguista Dom Célio Carvalho",
+  abraao: "Flamenguista Dom Abraão Lima",
+  "abraao lima": "Flamenguista Dom Abraão Lima",
+  "dom abraao lima (idoso carismatico)": "Flamenguista Dom Abraão Lima",
+  victor: "Alvinegro Dom Victor Brandão",
+  "victor brandao": "Alvinegro Dom Victor Brandão",
+  alves: "Flamenguista Dom Alves",
+  "carlos levi": "Palestrino Dom Carlos Levi",
+  bruno: "Flamenguista Dom Bruno",
+  moraes: "Flamenguista Dom Moraes",
+  "paulo henrique": "Flamenguista Dom Paulo Henrique",
+  andre: "Brasileiro Dom André",
+  ryan: "Vascaíno Dom Ryan",
+  "ryan silva": "Vascaíno Dom Ryan",
 };
 
 const spokenOperatorName = (
@@ -140,7 +152,10 @@ const spokenOperatorName = (
   options: { defaultHonorific?: boolean } = {},
 ): string => {
   const name = cleanSpeechValue(value, "não informado");
-  const specialName = SPECIAL_SPOKEN_OPERATOR_NAMES[normalizeOperatorName(name)];
+  const normalizedName = normalizeOperatorName(name);
+  const nameWithoutHonorific = normalizedName.replace(/^dom\s+/, "");
+  const specialName = SPECIAL_SPOKEN_OPERATOR_NAMES[normalizedName]
+    ?? SPECIAL_SPOKEN_OPERATOR_NAMES[nameWithoutHonorific];
 
   if (specialName) return specialName;
   if (options.defaultHonorific && !normalizeOperatorName(name).startsWith("dom ")) {
