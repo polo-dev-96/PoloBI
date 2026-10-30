@@ -2,6 +2,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { format, parseISO, isValid } from "date-fns";
 import { storage } from "./storage";
+import { registerElevenLabsRoute } from "./elevenLabs";
 import {
   mergeSatisfactionRecords,
   parseSatisfactionCsv,
@@ -12,6 +13,7 @@ export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
+  registerElevenLabsRoute(app);
   // ========== AUTHENTICATION ENDPOINT ==========
   app.post("/api/auth/login", async (req, res) => {
     try {

@@ -232,7 +232,7 @@ export default function Sobre() {
                 <div>
                   <h4 className="text-sm font-medium">APIs Integradas</h4>
                   <p className="text-xs text-muted-foreground">
-                    Milvus (relatórios, chamados ativos), Web Speech API (síntese de voz).
+                    Milvus (relatórios, chamados ativos), ElevenLabs e Web Speech API (síntese de voz).
                   </p>
                 </div>
               </div>

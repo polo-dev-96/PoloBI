@@ -120,6 +120,8 @@ export class AnnouncementQueue {
   private audioContext: AudioContext | null = null;
   private activeOscillators = new Set<OscillatorNode>();
   private speechResolve: ((result: SpeechResult) => void) | null = null;
+  private speechRequest: AbortController | null = null;
+  private remoteAudio: HTMLAudioElement | null = null;
   private watchdogTimer: ReturnType<typeof setTimeout> | null = null;
   private watchdogStartedAt = 0;
   private watchdogRemainingMs = 0;
@@ -283,6 +285,73 @@ export class AnnouncementQueue {
   }
 
   private async speak(item: AnnouncementItem): Promise<SpeechResult> {
+    const token = this.runToken;
+    const remoteResult = await this.speakWithElevenLabs(item).catch(() => "error" as const);
+    if (!this.isCurrent(item, token) || this.muted) return "muted";
+    if (remoteResult === "ended" || remoteResult === "muted") return remoteResult;
+    return this.speakWithBrowser(item);
+  }
+
+  private async speakWithElevenLabs(item: AnnouncementItem): Promise<SpeechResult> {
+    if (typeof window === "undefined" || typeof Audio === "undefined") return "unsupported";
+    const controller = new AbortController();
+    this.speechRequest = controller;
+    let timedOut = false;
+    const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, 13_000);
+    let blob: Blob;
+    try {
+      const response = await fetch("/api/announcements/speech", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: item.text }),
+        signal: controller.signal,
+      });
+      if (!response.ok) return "error";
+      blob = await response.blob();
+      if (!blob.size) return "error";
+    } catch {
+      return (!timedOut && controller.signal.aborted) || this.muted || this.active?.id !== item.id
+        ? "muted" : "error";
+    } finally {
+      clearTimeout(timeout);
+      if (this.speechRequest === controller) this.speechRequest = null;
+    }
+    if (this.active?.id !== item.id || this.muted || controller.signal.aborted) return "muted";
+
+    return new Promise<SpeechResult>((resolve) => {
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      audio.volume = item.volume ?? DEFAULT_SPEECH_VOLUME;
+      this.remoteAudio = audio;
+      let settled = false;
+      const settle = (result: SpeechResult) => {
+        if (settled) return;
+        settled = true;
+        this.clearWatchdog();
+        if (this.speechResolve === settle) this.speechResolve = null;
+        if (this.remoteAudio === audio) this.remoteAudio = null;
+        audio.onended = null;
+        audio.onerror = null;
+        audio.pause();
+        audio.removeAttribute("src");
+        URL.revokeObjectURL(url);
+        resolve(result);
+      };
+      this.speechResolve = settle;
+      audio.onended = () => settle("ended");
+      audio.onerror = () => settle("error");
+      this.startWatchdog(Math.min(120_000, Math.max(12_000, item.text.length * 115)), () => settle("error"));
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+        this.pauseWatchdog();
+      } else {
+        void audio.play().catch(() => {
+          if (typeof document === "undefined" || document.visibilityState !== "hidden") settle("error");
+        });
+      }
+    });
+  }
+
+  private async speakWithBrowser(item: AnnouncementItem): Promise<SpeechResult> {
     const synth = this.getSpeechSynthesis();
     if (!synth || typeof SpeechSynthesisUtterance === "undefined") return "unsupported";
 
@@ -367,6 +436,8 @@ export class AnnouncementQueue {
   }
 
   private stopSpeech(result: SpeechResult, cancelBrowserSpeech: boolean): void {
+    this.speechRequest?.abort();
+    this.speechRequest = null;
     const synth = this.getSpeechSynthesis();
     const resolve = this.speechResolve;
     this.speechResolve = null;
@@ -387,6 +458,20 @@ export class AnnouncementQueue {
     this.visibilityInstalled = true;
 
     document.addEventListener("visibilitychange", () => {
+      const audio = this.remoteAudio;
+      if (audio && this.active?.phase === "speaking" && this.speechResolve) {
+        const settle = this.speechResolve;
+        if (document.visibilityState === "hidden") {
+          audio.pause();
+          this.pauseWatchdog();
+        } else {
+          this.resumeWatchdog();
+          void audio.play().catch(() => {
+            if (document.visibilityState !== "hidden") settle("error");
+          });
+        }
+        return;
+      }
       const synth = this.getSpeechSynthesis();
       if (!synth || this.active?.phase !== "speaking" || !this.speechResolve) return;
 
