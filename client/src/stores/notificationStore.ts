@@ -137,7 +137,7 @@ const SPECIAL_SPOKEN_OPERATOR_NAMES: Readonly<Record<string, string>> = {
   "dom abraao lima (idoso carismatico)": "Flamenguista Dom Abraão Lima",
   victor: "Alvinegro Dom Victor Brandão",
   "victor brandao": "Alvinegro Dom Victor Brandão",
-  alves: "Flamenguista Dom Alves",
+  alves: "Azulino Dom Alves",
   "carlos levi": "Palestrino Dom Carlos Levi",
   bruno: "Flamenguista Dom Bruno",
   moraes: "Flamenguista Dom Moraes",
