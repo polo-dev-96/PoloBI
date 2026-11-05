@@ -1168,11 +1168,7 @@ export default function Home({ mode = "dashboard" }: HomeProps) {
   }, [ticketsDetalhadosFiltrados]);
 
   const metasSla = useMemo(() => ({
-    respostaMinutos: getPredominantSlaTarget(
-      ticketsDetalhadosFiltrados,
-      'total_sla_resposta',
-      META_RESPOSTA_MINUTOS,
-    ),
+    respostaMinutos: META_RESPOSTA_MINUTOS,
     solucaoMinutos: getPredominantSlaTarget(
       ticketsDetalhadosFiltrados,
       'total_sla_solucao',

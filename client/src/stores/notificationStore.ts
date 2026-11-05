@@ -129,22 +129,22 @@ const normalizeOperatorName = (value: string): string =>
   value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("pt-BR");
 
 const SPECIAL_SPOKEN_OPERATOR_NAMES: Readonly<Record<string, string>> = {
-  celio: "Flamenguista Dom Célio Carvalho",
-  "celio carvalho": "Flamenguista Dom Célio Carvalho",
-  "dom senhor celio carvalho": "Flamenguista Dom Célio Carvalho",
-  abraao: "Flamenguista Dom Abraão Lima",
-  "abraao lima": "Flamenguista Dom Abraão Lima",
-  "dom abraao lima (idoso carismatico)": "Flamenguista Dom Abraão Lima",
-  victor: "Alvinegro Dom Victor Brandão",
-  "victor brandao": "Alvinegro Dom Victor Brandão",
-  alves: "Azulino Dom Alves",
-  "carlos levi": "Palestrino Dom Carlos Levi",
-  bruno: "Flamenguista Dom Bruno",
-  moraes: "Flamenguista Dom Moraes",
-  "paulo henrique": "Flamenguista Dom Paulo Henrique",
-  andre: "Brasileiro Dom André",
-  ryan: "Vascaíno Dom Ryan",
-  "ryan silva": "Vascaíno Dom Ryan",
+  celio: "Dom Célio Carvalho",
+  "celio carvalho": "Dom Célio Carvalho",
+  "dom senhor celio carvalho": "Dom Célio Carvalho",
+  abraao: "Dom Abraão Lima",
+  "abraao lima": "Dom Abraão Lima",
+  "dom abraao lima (idoso carismatico)": "Dom Abraão Lima",
+  victor: "Dom Victor Brandão",
+  "victor brandao": "Dom Victor Brandão",
+  alves: "Dom Alves",
+  "carlos levi": "Dom Carlos Levi",
+  bruno: "Dom Bruno",
+  moraes: "Dom Moraes",
+  "paulo henrique": "Dom Paulo Henrique",
+  andre: "Dom André",
+  ryan: "Dom Ryan",
+  "ryan silva": "Dom Ryan",
 };
 
 const spokenOperatorName = (
