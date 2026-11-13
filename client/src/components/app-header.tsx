@@ -1,5 +1,7 @@
 import { useMemo, useState } from "react";
 import { useLocation } from "wouter";
+import { SiOpenai } from "react-icons/si";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   ChevronDown,
   Command,
@@ -74,7 +76,7 @@ export function AppHeader() {
 
   return (
     <>
-      <header className="app-topbar flex h-16 shrink-0 items-center gap-3 border-b px-3 sm:px-5">
+      <header className="app-topbar flex h-16 shrink-0 items-center gap-2 border-b px-3 sm:px-5 lg:gap-3">
         <SidebarTrigger
           className="h-9 w-9 rounded-lg border border-border/70 bg-background/60"
           title="Abrir ou recolher menu (Ctrl+B)"
@@ -99,7 +101,7 @@ export function AppHeader() {
 
         <Button
           variant="outline"
-          className="hidden h-9 w-full max-w-[280px] justify-start gap-2 rounded-lg bg-background/50 px-3 text-muted-foreground shadow-none md:flex"
+          className="hidden h-9 w-full max-w-[280px] justify-start gap-2 rounded-lg bg-background/50 px-3 text-muted-foreground shadow-none lg:flex"
           onClick={() => setCommandOpen(true)}
           aria-label="Abrir busca rápida"
         >
@@ -113,7 +115,7 @@ export function AppHeader() {
         <Button
           variant="ghost"
           size="icon"
-          className="h-9 w-9 md:hidden"
+          className="h-9 w-9 lg:hidden"
           onClick={() => setCommandOpen(true)}
           aria-label="Abrir busca rápida"
         >
@@ -131,6 +133,26 @@ export function AppHeader() {
         >
           <TvMinimalPlay className="h-4 w-4" aria-hidden="true" />
         </Button>
+
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="outline"
+              size="icon"
+              className="h-9 w-9 shrink-0 border-emerald-500/25 bg-emerald-500/[0.07] text-emerald-600 hover:bg-emerald-500/15 dark:text-emerald-300"
+              aria-label="Abrir Gestão da OpenAI em nova aba"
+              data-testid="button-open-openai-management"
+              onClick={() => {
+                const tab = window.open("/gestao-openai", "polo-bi-openai-management");
+                if (tab) tab.focus();
+                else toast({ title: "Abertura bloqueada", description: "Permita pop-ups para abrir a Gestão da OpenAI.", variant: "destructive" });
+              }}
+            >
+              <SiOpenai aria-hidden="true" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Gestão da OpenAI · abre em nova aba</TooltipContent>
+        </Tooltip>
 
         <div className="hidden items-center gap-2 rounded-full border border-emerald-500/20 bg-emerald-500/[0.08] px-3 py-1.5 xl:flex">
           <span className="relative flex h-2 w-2" aria-hidden="true">

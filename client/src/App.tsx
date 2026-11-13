@@ -25,6 +25,7 @@ const Sobre = lazy(() => import("@/pages/sobre"));
 const ManutencaoPreventiva = lazy(() => import("@/pages/manutencao-preventiva"));
 const PesquisaSatisfacao = lazy(() => import("@/pages/pesquisa-satisfacao"));
 const Gestao = lazy(() => import("@/pages/gestao"));
+const GestaoOpenAI = lazy(() => import("@/pages/gestao-openai"));
 const NotFound = lazy(() => import("@/pages/not-found"));
 
 function PageLoading() {
@@ -120,6 +121,13 @@ function AppRoutes() {
   return (
     <Switch>
       <Route path="/login" component={Login} />
+      <Route path="/gestao-openai">
+        <ProtectedRoute>
+          <Suspense fallback={<PageLoading />}>
+            <GestaoOpenAI />
+          </Suspense>
+        </ProtectedRoute>
+      </Route>
       <Route path="/gestao">
         <ProtectedRoute>
           <Suspense fallback={<PageLoading />}>

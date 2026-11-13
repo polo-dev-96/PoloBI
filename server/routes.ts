@@ -3,6 +3,8 @@ import { createServer, type Server } from "http";
 import { format, parseISO, isValid } from "date-fns";
 import { storage } from "./storage";
 import { registerElevenLabsRoute } from "./elevenLabs";
+import { adminSessions, bearerToken } from "./adminSession";
+import { registerOpenAIRoutes } from "./openai";
 import {
   mergeSatisfactionRecords,
   parseSatisfactionCsv,
@@ -14,8 +16,10 @@ export async function registerRoutes(
   app: Express
 ): Promise<Server> {
   registerElevenLabsRoute(app);
+  registerOpenAIRoutes(app);
   // ========== AUTHENTICATION ENDPOINT ==========
   app.post("/api/auth/login", async (req, res) => {
+    res.setHeader("Cache-Control", "no-store");
     try {
       const { email, password } = req.body;
 
@@ -40,7 +44,7 @@ export async function registerRoutes(
             name: "Administrador",
             role: "admin"
           },
-          token: Buffer.from(`${ADMIN_EMAIL}:${Date.now()}`).toString('base64')
+          token: adminSessions.create()
         });
       } else {
         // Credenciais inválidas
@@ -60,9 +64,9 @@ export async function registerRoutes(
 
   // Endpoint para verificar sessão
   app.get("/api/auth/verify", async (req, res) => {
-    const authHeader = req.headers.authorization;
-    if (authHeader && authHeader.startsWith("Bearer ")) {
-      res.json({ valid: true });
+    res.setHeader("Cache-Control", "no-store");
+    if (adminSessions.verify(bearerToken(req.headers.authorization))) {
+      res.json({ valid: true, user: { email: process.env.ADMIN_EMAIL, name: "Administrador", role: "admin" } });
     } else {
       res.status(401).json({ valid: false });
     }
@@ -70,6 +74,8 @@ export async function registerRoutes(
 
   // Endpoint de logout (apenas para logging)
   app.post("/api/auth/logout", async (req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    adminSessions.revoke(bearerToken(req.headers.authorization));
     res.json({ success: true, message: "Logout realizado com sucesso" });
   });
   // ========== END AUTHENTICATION ==========

@@ -4,10 +4,11 @@
   "type": "module",
   "license": "MIT",
   "scripts": {
-    "dev": "cross-env NODE_ENV=development tsx server/index.ts",
+    "dev": "cross-env NODE_ENV=development tsx watch server/index.ts",
     "build": "tsx script/build.ts",
     "start": "cross-env NODE_ENV=production node dist/index.cjs",
     "check": "tsc",
+    "test:openai": "tsx --test server/openai.test.ts client/src/services/openaiReport.test.ts",
     "test:notifications": "tsx --test client/src/hooks/useAmbientMusic.test.ts client/src/services/announcementQueue.test.ts client/src/services/satisfactionSurveyClassifier.test.ts client/src/services/slaTicketService.test.ts client/src/services/slaTimeMetrics.test.ts client/src/services/ticketReportClassifier.test.ts client/src/stores/notificationStore.test.ts",
     "db:push": "drizzle-kit push"
   },
