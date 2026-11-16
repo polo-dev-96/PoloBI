@@ -1,15 +1,21 @@
-import { useEffect, useMemo, useState } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 import "@/styles/openai-monitoring.css";
 import { Link } from "wouter";
 import { SiOpenai } from "react-icons/si";
 import {
-  AlertCircle,
+  Activity,
   ArrowDownToLine,
   ArrowLeft,
   ArrowUpFromLine,
   BarChart3,
   CalendarDays,
-  CheckCircle2,
   Coins,
   Database,
   Expand,
@@ -17,172 +23,296 @@ import {
   Minimize2,
   RefreshCw,
   ShieldCheck,
-  VolumeX,
+  SlidersHorizontal,
   TrendingUp,
+  VolumeX,
 } from "lucide-react";
-
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { OpenAICostChart } from "@/components/openai-cost-chart";
 import { OpenAICostChange } from "@/components/openai-cost-change";
 import {
+  OpenAIRecentChart,
+  compactNumber,
+} from "@/components/openai-recent-chart";
+import {
+  DashboardFeedback,
+  DashboardPanel,
+  DashboardTable,
+  StaleNotice,
+  ValueHint,
+  type DashboardColumn,
+} from "@/components/openai-dashboard";
+import {
   MonitorKpi,
-  MonitorPanel,
-  MonitorTable,
-  SourceMessage,
   moneyFormat,
   numberFormat,
 } from "@/components/openai-monitoring";
 import { useOpenAIReport } from "@/hooks/api/useOpenAIReport";
+import { useDollarQuote } from "@/hooks/api/useDollarQuote";
+import { costsInReais } from "@/services/openaiCurrency";
+import { recentTime } from "@/services/openaiTime";
+import {
+  chartLayout,
+  OPENAI_CHARTS,
+  OPENAI_CHART_VISIBILITY_KEY,
+  parseHiddenCharts,
+  sortDescending,
+  type OpenAIChart,
+} from "@/services/openaiDashboard";
 import {
   costComparisonSeries,
+  currentDayCost,
   dailyCostPeak,
-  dateRangeError,
   modelRows,
-  periodDates,
   monthlyProjection,
+  periodDates,
+  rankingDates,
+  recentUsageSeries,
   topProjectCosts,
-  type OpenAIPeriod,
+  type RankingDays,
 } from "@/services/openaiReport";
 import {
   OPENAI_METRICS,
-  type OpenAIMetric,
+  type OpenAICostReport,
   type OpenAIUsageCategory,
+  type OpenAIMetric,
 } from "@shared/openai";
 
-const fieldClass =
-  "openai-field h-10 min-w-0 w-full rounded-lg border border-slate-700/80 bg-[#080f1b] px-3 text-sm text-slate-200 outline-none focus-visible:border-cyan-400 focus-visible:ring-2 focus-visible:ring-cyan-400/30 disabled:opacity-60 [color-scheme:dark]";
-const cell = "whitespace-nowrap px-3 py-3 text-right font-mono tabular-nums";
-const periodLabels: Record<OpenAIPeriod, string> = {
-  month: "Mês atual",
-  today: "Hoje",
-  "7d": "Últimos 7 dias",
-  "30d": "Últimos 30 dias",
-  custom: "Personalizado",
+type PanelId =
+  | "costs"
+  | "recent"
+  | "monthly"
+  | "ranking"
+  | "models"
+  | "billing"
+  | "categories"
+  | "daily";
+const dateLabel = (date: string) => date.split("-").reverse().join("/");
+const fullTime = (value: string) =>
+  new Intl.DateTimeFormat("pt-BR", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    timeZone: "America/Manaus",
+  }).format(new Date(value));
+const numeric = (value: number) => (
+  <ValueHint text={numberFormat(value)}>
+    {value >= 1_000_000 ? compactNumber(value) : numberFormat(value)}
+  </ValueHint>
+);
+const names: Record<PanelId, string> = {
+  costs: "Evolução dos custos",
+  recent: "Consumo · últimas 3 horas",
+  monthly: "Top 10 · mês atual",
+  ranking: "Top 10 · intervalo",
+  models: "Consumo por modelo",
+  billing: "Projetos e cobrança",
+  categories: "Outras categorias de uso",
+  daily: "Dados diários · UTC",
 };
 
 export default function GestaoOpenAI() {
-  const [utcToday, setUtcToday] = useState(() =>
+  const [today, setToday] = useState(() =>
     new Date().toISOString().slice(0, 10),
   );
-  const [draftPeriod, setDraftPeriod] = useState<OpenAIPeriod>("month");
-  const [draftRange, setDraftRange] = useState(() => periodDates("month"));
-  const [draftProject, setDraftProject] = useState("");
-  const [applied, setApplied] = useState({
-    period: "month" as OpenAIPeriod,
-    ...periodDates("month"),
-    projectId: "",
+  const [projectId, setProjectId] = useState("");
+  const [currencyChoice, setCurrencyChoice] = useState("");
+  const [hiddenCharts, setHiddenCharts] = useState<OpenAIChart[]>(() => {
+    try {
+      return parseHiddenCharts(
+        localStorage.getItem(OPENAI_CHART_VISIBILITY_KEY),
+      );
+    } catch {
+      return [];
+    }
   });
-  const [validation, setValidation] = useState<string | null>(null);
+  const layout = chartLayout(hiddenCharts);
+  const [rankingDays, setRankingDays] = useState<RankingDays>(7);
+  const [mode, setMode] = useState<"requests" | "tokens">("requests");
+  const [category, setCategory] = useState<OpenAIUsageCategory>("embeddings");
+  const [expanded, setExpanded] = useState<PanelId | null>(null);
+  const dialogTitle = useRef<HTMLHeadingElement>(null);
+  const dialogOpener = useRef<HTMLElement | null>(null);
   const [fullscreen, setFullscreen] = useState(
     () => !!document.fullscreenElement,
   );
   const [browserMessage, setBrowserMessage] = useState<string | null>(null);
-  const [currencyChoice, setCurrencyChoice] = useState("");
-  const [category, setCategory] = useState<OpenAIUsageCategory>("embeddings");
   useEffect(() => {
-    const interval = window.setInterval(
-      () => setUtcToday(new Date().toISOString().slice(0, 10)),
-      60_000,
+    try {
+      localStorage.setItem(
+        OPENAI_CHART_VISIBILITY_KEY,
+        JSON.stringify(hiddenCharts),
+      );
+    } catch {
+      /* A personalização continua disponível se o navegador bloquear o armazenamento. */
+    }
+  }, [hiddenCharts]);
+  useEffect(() => {
+    const timer = window.setInterval(
+      () => setToday(new Date().toISOString().slice(0, 10)),
+      15_000,
     );
-    const change = () => setFullscreen(!!document.fullscreenElement);
-    document.addEventListener("fullscreenchange", change);
+    const focus = () => setToday(new Date().toISOString().slice(0, 10));
+    const full = () => setFullscreen(!!document.fullscreenElement);
+    window.addEventListener("focus", focus);
+    document.addEventListener("fullscreenchange", full);
     return () => {
-      clearInterval(interval);
-      document.removeEventListener("fullscreenchange", change);
+      clearInterval(timer);
+      window.removeEventListener("focus", focus);
+      document.removeEventListener("fullscreenchange", full);
     };
   }, []);
   const filters = useMemo(
     () => ({
-      ...(applied.period === "custom"
-        ? { startDate: applied.startDate, endDate: applied.endDate }
-        : periodDates(applied.period, new Date(`${utcToday}T12:00:00Z`))),
-      projectId: applied.projectId,
+      ...periodDates("month", new Date(`${today}T12:00:00Z`)),
+      projectId,
     }),
-    [applied, utcToday],
+    [today, projectId],
   );
-  const displayedRange =
-    draftPeriod === "custom"
-      ? draftRange
-      : periodDates(draftPeriod, new Date(`${utcToday}T12:00:00Z`));
-  const { report, projects, monthlyReport, comparison, visible } =
-    useOpenAIReport(filters);
-  const data = report.data;
-  const consumption = data?.usage.find((source) => source.id === "completions");
-  const selectedCategory = data?.usage.find((source) => source.id === category);
-  const models = useMemo(() => modelRows(consumption), [consumption]);
+  const {
+    report,
+    projects,
+    comparison,
+    recent,
+    ranking,
+    visible,
+    refreshing,
+    refresh,
+  } = useOpenAIReport(filters, rankingDays);
+  const rawData = report.data;
+  const sourceCurrencies = Array.from(
+    new Set([
+      ...(rawData?.costs.totals.map((value) => value.currency) ?? []),
+      ...(ranking.data?.totals.map((value) => value.currency) ?? []),
+      ...comparison.reports.flatMap(
+        (value) => value?.costs.totals.map((total) => total.currency) ?? [],
+      ),
+    ]),
+  );
   const currencies = Array.from(
     new Set([
-      ...(data?.costs.totals.map((total) => total.currency) ?? []),
-      ...comparison.reports.flatMap((previous) =>
-        previous?.costs.status === "ok"
-          ? previous.costs.totals.map((total) => total.currency)
-          : [],
-      ),
+      ...(sourceCurrencies.length ? sourceCurrencies : ["USD"]),
+      ...(!sourceCurrencies.length || sourceCurrencies.includes("USD")
+        ? ["BRL"]
+        : []),
     ]),
   );
   const currency = currencies.includes(currencyChoice)
     ? currencyChoice
     : currencies[0] || "USD";
+  const converting = currency === "BRL" && !sourceCurrencies.includes("BRL");
+  const quote = useDollarQuote(converting, visible);
+  const quoteLoading = converting && quote.isPending;
+  const quoteError =
+    converting && !quote.data && quote.isError
+      ? "Cotação indisponível. Tente atualizar ou selecione USD nos filtros."
+      : undefined;
+  const exchangeNote =
+    converting && quote.data
+      ? `Conversão de referência · 1 USD = R$ ${new Intl.NumberFormat("pt-BR", { minimumFractionDigits: 4, maximumFractionDigits: 6 }).format(quote.data.rate)} · cotação de venda AwesomeAPI em ${recentTime(Date.parse(quote.data.quotedAt), true)} (Manaus). Última consulta: ${fullTime(new Date(quote.dataUpdatedAt).toISOString())} (Manaus). Consultada a cada 5 minutos; não inclui taxas ou impostos. Todos os dias usam esta mesma cotação, inclusive o mês anterior.`
+      : undefined;
+  const displayCosts = (costs: OpenAICostReport): OpenAICostReport => {
+    if (!converting || costs.status === "error") return costs;
+    return quote.data
+      ? costsInReais(costs, quote.data.rate)
+      : {
+          ...costs,
+          status: "error",
+          message: quoteError || "Consultando cotação USD/BRL…",
+          totals: [],
+          daily: [],
+          rows: [],
+        };
+  };
+  const data = rawData
+    ? { ...rawData, costs: displayCosts(rawData.costs) }
+    : undefined;
+  const comparisonReports = comparison.reports.map((value) =>
+    value ? { ...value, costs: displayCosts(value.costs) } : undefined,
+  );
+  const rankingCosts = ranking.data ? displayCosts(ranking.data) : undefined;
+  const source = data?.usage.find((value) => value.id === "completions");
+  const costsOk = data?.costs.status === "ok";
+  const usageOk = source?.status === "ok";
   const series = data
-    ? costComparisonSeries(data, comparison.reports, currency)
+    ? costComparisonSeries(data, comparisonReports, currency)
     : [];
   const peak = dailyCostPeak(series);
-  const available = data
-    ? [data.costs, ...data.usage].filter((source) => source.status === "ok")
-        .length
-    : 0;
-  const sourceCount = data ? data.usage.length + 1 : 0;
-  const anyError = !!data && available < sourceCount;
-  const usageOk = consumption?.status === "ok";
-  const costsOk = data?.costs.status === "ok";
-  const hasCostSeries =
-    costsOk &&
-    (data.costs.totals.length > 0 ||
-      series.some((day) => day.costPending) ||
-      comparison.reports.some(
-        (previous) =>
-          previous?.costs.status === "ok" && previous.costs.totals.length > 0,
-      ));
+  const models = useMemo(() => modelRows(source), [source]);
+  const costRows = sortDescending(
+    (data?.costs.rows ?? []).filter((row) => row.currency === currency),
+    (row) => Number(row.amount),
+  );
+  const selectedCategory = data?.usage.find((value) => value.id === category);
+  const metrics = Object.keys(OPENAI_METRICS).filter(
+    (key) => selectedCategory?.totals[key as OpenAIMetric] !== undefined,
+  ) as OpenAIMetric[];
+  const categoryRows = sortDescending(
+    (selectedCategory?.rows ?? []).flatMap((row, index) =>
+      metrics
+        .filter((metric) => row.metrics[metric] !== undefined)
+        .map((metric) => ({
+          ...row,
+          metric,
+          value: row.metrics[metric]!,
+          key: `${index}-${metric}`,
+        })),
+    ),
+    (row) => row.value,
+  );
   const projectNames = new Map(
-    projects.data?.projects.map((project) => [project.id, project.name]),
+    projects.data?.projects.map((value) => [value.id, value.name]),
   );
   const projectName = (id: string | null) =>
     id ? projectNames.get(id) || id : "Não atribuído";
-  const topProjects = useMemo(
-    () => topProjectCosts(data?.costs, currency),
-    [data?.costs, currency],
+  const selectedName = projectId
+    ? projectName(projectId)
+    : "Toda a organização";
+  const total =
+    data?.costs.totals.find((value) => value.currency === currency)?.amount ??
+    "0";
+  const dayCost = currentDayCost(
+    data,
+    currency,
+    new Date(`${today}T12:00:00Z`),
   );
-  const projection = useMemo(
-    () =>
-      monthlyProjection(monthlyReport.data, new Date(`${utcToday}T12:00:00Z`)),
-    [monthlyReport.data, utcToday],
-  );
-  const monthElapsedDays = Number(utcToday.slice(8, 10)) - 1;
-  const refreshing =
-    report.isFetching ||
-    projects.isFetching ||
-    monthlyReport.isFetching ||
-    comparison.isFetching;
-  const metricKeys = Object.keys(OPENAI_METRICS).filter(
-    (key) => selectedCategory?.totals[key as OpenAIMetric] !== undefined,
-  ) as OpenAIMetric[];
-  const formatTime = (value: string) =>
-    new Intl.DateTimeFormat("pt-BR", {
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-      timeZone: "America/Manaus",
-    }).format(new Date(value));
-
+  const projection = monthlyProjection(
+    data,
+    new Date(`${today}T12:00:00Z`),
+  )?.find((value) => value.currency === currency);
+  const available = rawData
+    ? [rawData.costs, ...rawData.usage].filter((value) => value.status === "ok")
+        .length
+    : 0;
+  const range = rankingDates(rankingDays, new Date(`${today}T12:00:00Z`));
+  const resetKey = `${projectId}:${currency}:${filters.startDate}`;
+  const badges = data ? [data.costs, ...data.usage].length : 12;
+  const icons: Record<PanelId, ReactNode> = {
+    costs: <Coins size={14} />,
+    recent: <Activity size={14} />,
+    monthly: <BarChart3 size={14} />,
+    ranking: <BarChart3 size={14} />,
+    models: <Layers3 size={14} />,
+    billing: <Coins size={14} />,
+    categories: <Database size={14} />,
+    daily: <CalendarDays size={14} />,
+  };
   async function toggleFullscreen() {
     try {
       if (document.fullscreenElement) await document.exitFullscreen();
-      else if (document.documentElement.requestFullscreen)
-        await document.documentElement.requestFullscreen();
-      else
-        setBrowserMessage(
-          "Este navegador não oferece suporte ao modo de tela cheia.",
-        );
+      else await document.documentElement.requestFullscreen();
     } catch {
       setBrowserMessage(
         "Não foi possível ativar a tela cheia neste navegador.",
@@ -190,134 +320,534 @@ export default function GestaoOpenAI() {
     }
   }
 
+  function openPanel(id: PanelId) {
+    if (!expanded) {
+      const active = document.activeElement;
+      dialogOpener.current =
+        active instanceof HTMLElement && active !== document.body
+          ? active
+          : document.querySelector<HTMLElement>(
+              `[data-panel="${id === "daily" ? "costs" : id}"] .openai-dash-panel-actions button`,
+            );
+    }
+    setExpanded(id);
+  }
+
+  function rankingBody(
+    costs: OpenAICostReport | undefined,
+    loading: boolean,
+    error?: string,
+  ) {
+    const rows = topProjectCosts(costs, currency);
+    return (
+      <>
+        <StaleNotice error={costs ? error : undefined} />
+        <DashboardFeedback
+          loading={loading && (!costs || quoteLoading)}
+          error={
+            !costs
+              ? error
+              : costs.status === "error"
+                ? costs.message
+                : undefined
+          }
+          empty={costs?.status === "ok" && !rows.length}
+        />
+        {!!rows.length && (
+          <ol
+            className="openai-ranking"
+            aria-label="Projetos ordenados por gasto"
+          >
+            {rows.map((row, index) => (
+              <li key={row.projectId}>
+                <div className="openai-rank-line">
+                  <span className="openai-rank-number">
+                    {String(index + 1).padStart(2, "0")}
+                  </span>
+                  <ValueHint text={projectName(row.projectId)} />
+                  <span className="openai-rank-value">
+                    {moneyFormat(row.amount, currency)}
+                  </span>
+                </div>
+                <div className="openai-rank-track" aria-hidden="true">
+                  <span
+                    style={{ width: `${(row.amount / rows[0].amount) * 100}%` }}
+                  />
+                </div>
+              </li>
+            ))}
+          </ol>
+        )}
+        {costs?.rows.some(
+          (row) =>
+            !row.projectId &&
+            row.currency === currency &&
+            Number(row.amount) !== 0,
+        ) && (
+          <p className="openai-panel-note">
+            Itens sem projeto fora do ranking.
+          </p>
+        )}
+      </>
+    );
+  }
+
+  function panelBody(id: PanelId, large = false): ReactNode {
+    switch (id) {
+      case "costs":
+        return (
+          <>
+            <div className="openai-cost-summary">
+              <OpenAICostChange
+                points={series}
+                currency={currency}
+                pending={comparison.isPending}
+                error={comparison.hasError || !costsOk}
+              />
+              {peak && (
+                <span className="openai-cost-peak">
+                  <TrendingUp size={11} aria-hidden="true" />
+                  <ValueHint
+                    text={`Pico atual em ${dateLabel(peak.date)}: ${moneyFormat(peak.cost, currency)}`}
+                  >
+                    Pico {peak.date.slice(8)}/{peak.date.slice(5, 7)} ·{" "}
+                    {moneyFormat(peak.cost, currency)}
+                  </ValueHint>
+                </span>
+              )}
+              <button
+                type="button"
+                className="openai-text-button"
+                onClick={() => openPanel("daily")}
+              >
+                Dados
+              </button>
+            </div>
+            <DashboardFeedback
+              loading={report.isPending || quoteLoading}
+              error={
+                data?.costs.status === "error"
+                  ? data.costs.message
+                  : !data
+                    ? report.error?.message
+                    : undefined
+              }
+            />
+            {costsOk && (
+              <OpenAICostChart
+                points={series}
+                currency={currency}
+                comparisonPending={comparison.isPending}
+                comparisonError={comparison.hasError}
+              />
+            )}
+          </>
+        );
+      case "recent":
+        return (
+          <>
+            <div className="openai-recent-controls">
+              <div
+                className="openai-segmented"
+                aria-label="Métrica do consumo recente"
+              >
+                {(["requests", "tokens"] as const).map((value) => (
+                  <button
+                    key={value}
+                    type="button"
+                    aria-pressed={mode === value}
+                    onClick={() => setMode(value)}
+                  >
+                    {value === "requests" ? "Requisições" : "Tokens"}
+                  </button>
+                ))}
+              </div>
+              {recent.data && (
+                <span className="openai-recent-total">
+                  {compactNumber(
+                    mode === "requests"
+                      ? (recent.data.totals.num_model_requests ?? 0)
+                      : (recent.data.totals.input_tokens ?? 0) +
+                          (recent.data.totals.output_tokens ?? 0),
+                  )}
+                  <small> na janela</small>
+                </span>
+              )}
+            </div>
+            <StaleNotice
+              error={recent.data ? recent.error?.message : undefined}
+            />
+            <DashboardFeedback
+              loading={recent.isPending}
+              error={!recent.data ? recent.error?.message : undefined}
+            />
+            {recent.data && (
+              <OpenAIRecentChart report={recent.data} mode={mode} />
+            )}
+            {large && recent.data && (
+              <div className="openai-recent-data">
+                <DashboardTable
+                  label="Consumo por minuto"
+                  resetKey={projectId}
+                  rows={recentUsageSeries(recent.data)}
+                  rowKey={(row) => String(row.timestamp)}
+                  columns={[
+                    {
+                      label: "Minuto · Manaus",
+                      width: "28%",
+                      render: (row) => recentTime(row.timestamp, true),
+                    },
+                    {
+                      label: "Requisições",
+                      numeric: true,
+                      render: (row) => numeric(row.requests),
+                    },
+                    {
+                      label: "Entrada",
+                      numeric: true,
+                      render: (row) => numeric(row.input),
+                    },
+                    {
+                      label: "Saída",
+                      numeric: true,
+                      render: (row) => numeric(row.output),
+                    },
+                    {
+                      label: "Cache¹",
+                      numeric: true,
+                      render: (row) => numeric(row.cached),
+                    },
+                  ]}
+                />
+              </div>
+            )}
+          </>
+        );
+      case "monthly":
+        return rankingBody(data?.costs, report.isPending || quoteLoading);
+      case "ranking":
+        return rankingBody(
+          rankingCosts,
+          ranking.isPending || quoteLoading,
+          ranking.error?.message,
+        );
+      case "models":
+        return (
+          <>
+            <DashboardFeedback
+              loading={report.isPending}
+              error={
+                source?.status === "error"
+                  ? source.message
+                  : !data
+                    ? report.error?.message
+                    : undefined
+              }
+              empty={usageOk && !models.length}
+            />
+            {usageOk && !!models.length && (
+              <DashboardTable
+                label="Consumo por modelo"
+                resetKey={resetKey}
+                rows={models}
+                rowKey={(row) => row.model}
+                columns={[
+                  {
+                    label: "Modelo",
+                    width: "29%",
+                    render: (row) => <ValueHint text={row.model} />,
+                  },
+                  {
+                    label: "Entrada",
+                    width: "20%",
+                    numeric: true,
+                    render: (row) => numeric(row.input),
+                  },
+                  {
+                    label: "Saída",
+                    width: "16%",
+                    numeric: true,
+                    render: (row) => numeric(row.output),
+                  },
+                  {
+                    label: "Cache¹",
+                    width: "20%",
+                    numeric: true,
+                    render: (row) => numeric(row.cached),
+                  },
+                  {
+                    label: "Req.",
+                    width: "15%",
+                    numeric: true,
+                    render: (row) => numeric(row.requests),
+                  },
+                ]}
+              />
+            )}
+            <p className="openai-panel-note">
+              ¹ Cache incluído na entrada. Conversações · mês atual.
+            </p>
+          </>
+        );
+      case "billing":
+        return (
+          <>
+            <DashboardFeedback
+              loading={report.isPending || quoteLoading}
+              error={
+                data?.costs.status === "error"
+                  ? data.costs.message
+                  : !data
+                    ? report.error?.message
+                    : undefined
+              }
+              empty={costsOk && !costRows.length}
+            />
+            {costsOk && !!costRows.length && (
+              <DashboardTable
+                label="Custos por projeto e item"
+                resetKey={resetKey}
+                rows={costRows}
+                rowHeight={36}
+                rowKey={(row, index) =>
+                  `${row.projectId}-${row.lineItem}-${index}`
+                }
+                columns={[
+                  {
+                    label: "Projeto / item de cobrança",
+                    width: "72%",
+                    render: (row) => (
+                      <div className="openai-double-cell">
+                        <ValueHint text={projectName(row.projectId)} />
+                        <ValueHint
+                          text={row.lineItem || "Item não informado"}
+                        />
+                      </div>
+                    ),
+                  },
+                  {
+                    label: currency,
+                    width: "28%",
+                    numeric: true,
+                    sortDirection: "descending",
+                    render: (row) => (
+                      <ValueHint text={moneyFormat(row.amount, row.currency)} />
+                    ),
+                  },
+                ]}
+              />
+            )}
+          </>
+        );
+      case "categories":
+        return (
+          <>
+            <div className="openai-category-control">
+              <label
+                className="sr-only"
+                htmlFor={large ? "openai-category-expanded" : "openai-category"}
+              >
+                Categoria de uso
+              </label>
+              <select
+                id={large ? "openai-category-expanded" : "openai-category"}
+                value={category}
+                onChange={(event) =>
+                  setCategory(event.target.value as OpenAIUsageCategory)
+                }
+              >
+                {data?.usage
+                  .filter((value) => value.id !== "completions")
+                  .map((value) => (
+                    <option key={value.id} value={value.id}>
+                      {value.label}
+                      {value.status === "error" ? " · indisponível" : ""}
+                    </option>
+                  ))}
+              </select>
+              <span>{selectedCategory?.rows.length ?? 0} registros</span>
+            </div>
+            <DashboardFeedback
+              loading={report.isPending}
+              error={
+                selectedCategory?.status === "error"
+                  ? selectedCategory.message
+                  : !data
+                    ? report.error?.message
+                    : undefined
+              }
+              empty={selectedCategory?.status === "ok" && !categoryRows.length}
+            />
+            {selectedCategory?.status === "ok" && !!categoryRows.length && (
+              <>
+                <div className="openai-category-totals">
+                  {metrics.map((metric) => (
+                    <ValueHint
+                      key={metric}
+                      text={`${OPENAI_METRICS[metric]}: ${numberFormat(selectedCategory.totals[metric] ?? 0)}`}
+                    >
+                      <span>{OPENAI_METRICS[metric]}</span>
+                      <strong>
+                        {compactNumber(selectedCategory.totals[metric] ?? 0)}
+                      </strong>
+                    </ValueHint>
+                  ))}
+                </div>
+                <DashboardTable
+                  label="Métricas por projeto e modelo"
+                  resetKey={`${resetKey}:${category}`}
+                  rows={categoryRows}
+                  rowHeight={32}
+                  rowKey={(row) => row.key}
+                  columns={[
+                    {
+                      label: "Projeto / modelo",
+                      width: "45%",
+                      render: (row) => (
+                        <div className="openai-double-cell">
+                          <ValueHint text={projectName(row.projectId)} />
+                          <ValueHint text={row.model || "—"} />
+                        </div>
+                      ),
+                    },
+                    {
+                      label: "Métrica",
+                      width: "33%",
+                      render: (row) => (
+                        <ValueHint text={OPENAI_METRICS[row.metric]} />
+                      ),
+                    },
+                    {
+                      label: "Valor",
+                      width: "22%",
+                      numeric: true,
+                      sortDirection: "descending",
+                      render: (row) => numeric(row.value),
+                    },
+                  ]}
+                />
+              </>
+            )}
+          </>
+        );
+      case "daily": {
+        const columns: DashboardColumn<(typeof series)[number]>[] = [
+          {
+            label: "Data UTC",
+            width: "17%",
+            render: (row) => <ValueHint text={dateLabel(row.date)} />,
+          },
+          {
+            label: `Atual · ${currency}`,
+            numeric: true,
+            render: (row) =>
+              row.costPending ? (
+                <ValueHint text="Em processamento" />
+              ) : row.cost === null ? (
+                <ValueHint text="Indisponível" />
+              ) : (
+                <ValueHint
+                  text={`${moneyFormat(row.cost, currency)}${row.isPartial ? " · parcial" : ""}`}
+                />
+              ),
+          },
+          {
+            label: "Data anterior",
+            render: (row) => (
+              <ValueHint
+                text={
+                  row.previousDate
+                    ? dateLabel(row.previousDate)
+                    : "Sem equivalente"
+                }
+              />
+            ),
+          },
+          {
+            label: `Anterior · ${currency}`,
+            numeric: true,
+            render: (row) => (
+              <ValueHint
+                text={
+                  row.previousCost === null
+                    ? "Indisponível"
+                    : moneyFormat(row.previousCost, currency)
+                }
+              />
+            ),
+          },
+          {
+            label: "Entrada",
+            numeric: true,
+            render: (row) => (row.input === null ? "—" : numeric(row.input)),
+          },
+          {
+            label: "Saída",
+            numeric: true,
+            render: (row) => (row.output === null ? "—" : numeric(row.output)),
+          },
+        ];
+        return (
+          <DashboardTable
+            label="Dados diários de custos e tokens"
+            resetKey={resetKey}
+            rows={series}
+            rowKey={(row) => row.date}
+            columns={columns}
+          />
+        );
+      }
+    }
+  }
+
   return (
-    <div className="openai-monitor dark min-h-svh min-w-0 bg-[#060b14] text-slate-200 [color-scheme:dark]">
-      <a
-        href="#openai-content"
-        className="fixed left-3 top-3 z-50 -translate-y-24 rounded-lg bg-cyan-300 px-4 py-2 text-sm font-semibold text-slate-950 focus:translate-y-0"
-      >
+    <div className="openai-monitor openai-dashboard dark">
+      <a className="openai-skip" href="#openai-content">
         Pular para o conteúdo
       </a>
-      <header className="openai-toolbar border-b border-slate-800/80 bg-[#080e19]">
-        <div className="grid w-full min-w-0 grid-cols-1 items-center gap-3 px-4 py-3 sm:grid-cols-[auto_minmax(0,1fr)] sm:px-6 min-[1440px]:grid-cols-[auto_minmax(0,1fr)_auto] min-[1440px]:gap-4">
-          <div className="openai-brand flex min-w-0 items-center gap-3">
-            <div className="openai-brand-mark flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-emerald-400/20 bg-emerald-400/10 text-emerald-300">
-              <SiOpenai className="h-7 w-7" aria-hidden="true" />
-            </div>
-            <div>
-              <h1 className="text-base font-semibold tracking-tight sm:text-lg">
-                Gestão da OpenAI
-              </h1>
-              <p className="mt-0.5 text-[10px] uppercase tracking-[0.18em] text-slate-400">
-                Polo Intelligence
-              </p>
-            </div>
+      <header className="openai-toolbar">
+        <div className="openai-brand">
+          <span className="openai-brand-mark">
+            <SiOpenai size={26} aria-hidden="true" />
+          </span>
+          <div>
+            <h1>Gestão da OpenAI</h1>
+            <p>POLO INTELLIGENCE · VISÃO EXECUTIVA</p>
           </div>
-          <form
-            className="openai-filters grid min-w-0 gap-2 sm:col-span-2 sm:row-start-2 sm:grid-cols-2 lg:grid-cols-[1fr_1fr_1fr_1.35fr_auto] min-[1440px]:col-span-1 min-[1440px]:col-start-2 min-[1440px]:row-start-1"
-            onSubmit={(event) => {
-              event.preventDefault();
-              const error = dateRangeError(
-                displayedRange.startDate,
-                displayedRange.endDate,
-              );
-              setValidation(error);
-              if (!error)
-                setApplied({
-                  period: draftPeriod,
-                  ...displayedRange,
-                  projectId: draftProject,
-                });
-            }}
-          >
-            <div>
-              <label
-                htmlFor="openai-period"
-                className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-400"
+        </div>
+        <div className="openai-header-scope">
+          <CalendarDays size={13} aria-hidden="true" />
+          <span>
+            Mês atual · {dateLabel(filters.startDate)} — {dateLabel(today)} UTC
+          </span>
+          <ValueHint text={selectedName} />
+        </div>
+        <div className="openai-toolbar-actions">
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button
+                variant="outline"
+                size="sm"
+                aria-label="Filtros de projeto, moeda e gráficos"
               >
-                <CalendarDays className="h-3 w-3" aria-hidden="true" />
-                Período · UTC
-              </label>
-              <select
-                id="openai-period"
-                className={fieldClass}
-                value={draftPeriod}
-                onChange={(event) => {
-                  const value = event.target.value as OpenAIPeriod;
-                  setDraftPeriod(value);
-                  if (value === "custom") setDraftRange(displayedRange);
-                  setValidation(null);
-                }}
-              >
-                {Object.entries(periodLabels).map(([value, label]) => (
-                  <option key={value} value={value}>
-                    {label}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label
-                htmlFor="openai-start"
-                className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-slate-400"
-              >
-                Data inicial
-              </label>
-              <input
-                id="openai-start"
-                type="date"
-                required
-                max={utcToday}
-                readOnly={draftPeriod !== "custom"}
-                className={fieldClass}
-                value={displayedRange.startDate}
-                aria-invalid={!!validation}
-                aria-describedby={validation ? "openai-date-error" : undefined}
-                onChange={(event) =>
-                  setDraftRange((range) => ({
-                    ...range,
-                    startDate: event.target.value,
-                  }))
-                }
-              />
-            </div>
-            <div>
-              <label
-                htmlFor="openai-end"
-                className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-slate-400"
-              >
-                Data final
-              </label>
-              <input
-                id="openai-end"
-                type="date"
-                required
-                max={utcToday}
-                readOnly={draftPeriod !== "custom"}
-                className={fieldClass}
-                value={displayedRange.endDate}
-                aria-invalid={!!validation}
-                aria-describedby={validation ? "openai-date-error" : undefined}
-                onChange={(event) =>
-                  setDraftRange((range) => ({
-                    ...range,
-                    endDate: event.target.value,
-                  }))
-                }
-              />
-            </div>
-            <div>
-              <label
-                htmlFor="openai-project"
-                className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-slate-400"
-              >
-                Projeto
-              </label>
+                <SlidersHorizontal size={13} />
+                Filtros
+                {(projectId || hiddenCharts.length > 0 || converting) && (
+                  <span className="openai-filter-dot" />
+                )}
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent
+              align="end"
+              className="openai-dashboard openai-filter-popover dark"
+            >
+              <h2>Escopo do painel</h2>
+              <p>Os painéis financeiros usam dias em UTC.</p>
+              <label htmlFor="openai-project">Projeto</label>
               <select
                 id="openai-project"
-                className={fieldClass}
-                value={draftProject}
-                onChange={(event) => setDraftProject(event.target.value)}
+                value={projectId}
+                onChange={(event) => setProjectId(event.target.value)}
                 disabled={projects.isPending}
               >
                 <option value="">Todos os projetos</option>
@@ -328,669 +858,354 @@ export default function GestaoOpenAI() {
                   </option>
                 ))}
               </select>
-            </div>
-            <Button
-              type="submit"
-              className="openai-apply self-end bg-cyan-400 text-slate-950 hover:bg-cyan-300"
-            >
-              Aplicar filtros
-            </Button>
-            {validation && (
-              <p
-                id="openai-date-error"
-                role="alert"
-                className="text-xs text-rose-300 sm:col-span-2 lg:col-span-5"
+              <label htmlFor="openai-currency">Moeda</label>
+              <select
+                id="openai-currency"
+                value={currency}
+                onChange={(event) => setCurrencyChoice(event.target.value)}
               >
-                {validation}
+                {currencies.map((value) => (
+                  <option key={value} value={value}>
+                    {value === "BRL"
+                      ? "Real (BRL)"
+                      : value === "USD"
+                        ? "Dólar (USD)"
+                        : value}
+                  </option>
+                ))}
+              </select>
+              <p>
+                {converting
+                  ? "Conversão de referência USD → BRL · cotação a cada 5 minutos."
+                  : "Custos na moeda de origem informada pela OpenAI."}
               </p>
-            )}
-            {projects.isError && (
-              <p
-                role="status"
-                className="text-xs text-amber-200 sm:col-span-2 lg:col-span-5"
-              >
-                Projetos: {projects.error.message} A consulta de todos os
-                projetos continua disponível.
-              </p>
-            )}
-          </form>
-          <div className="flex flex-wrap items-center gap-2 sm:col-start-2 sm:row-start-1 sm:justify-end min-[1440px]:col-start-3">
-            <span className="mr-2 inline-flex items-center gap-1.5 text-xs text-slate-400">
-              <VolumeX className="h-3.5 w-3.5" aria-hidden="true" />
-              Silencioso
-            </span>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                void report.refetch();
-                void projects.refetch();
-                if (monthlyReport !== report) void monthlyReport.refetch();
-                void comparison.refetch();
-              }}
-              disabled={refreshing}
-              aria-label="Atualizar relatórios da OpenAI"
-            >
-              <RefreshCw
-                className={refreshing ? "animate-spin" : ""}
-                aria-hidden="true"
-              />
-              <span>{refreshing ? "Atualizando…" : "Atualizar"}</span>
-            </Button>
-            <Button
-              variant="outline"
-              size="icon"
-              onClick={() => void toggleFullscreen()}
-              aria-label={
-                fullscreen ? "Sair da tela cheia" : "Ativar tela cheia"
-              }
-              title={fullscreen ? "Sair da tela cheia" : "Tela cheia"}
-            >
-              {fullscreen ? (
-                <Minimize2 aria-hidden="true" />
-              ) : (
-                <Expand aria-hidden="true" />
+              {converting && (
+                <p role="status">
+                  {quoteLoading
+                    ? "Consultando cotação…"
+                    : quoteError || exchangeNote}
+                  {quote.isError &&
+                    quote.data &&
+                    " Cotação desatualizada: a última consulta falhou; mantida a taxa anterior."}{" "}
+                  <a
+                    href="https://docs.awesomeapi.com.br/api-de-moedas"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Fonte da cotação
+                  </a>
+                </p>
               )}
-            </Button>
-            <Button variant="outline" size="sm" asChild>
-              <Link href="/">
-                <ArrowLeft aria-hidden="true" />
-                Dashboard
-              </Link>
-            </Button>
-          </div>
+              <fieldset className="openai-chart-visibility">
+                <legend>Gráficos visíveis</legend>
+                <p>
+                  Desmarque para ocultar. Os demais ocupam o espaço liberado.
+                </p>
+                {OPENAI_CHARTS.map((chart) => (
+                  <label key={chart} className="openai-chart-toggle">
+                    <input
+                      type="checkbox"
+                      checked={!hiddenCharts.includes(chart)}
+                      onChange={(event) =>
+                        setHiddenCharts((current) =>
+                          event.target.checked
+                            ? current.filter((id) => id !== chart)
+                            : [...current, chart],
+                        )
+                      }
+                    />
+                    <span>{names[chart]}</span>
+                  </label>
+                ))}
+                <button
+                  type="button"
+                  className="openai-text-button"
+                  disabled={!hiddenCharts.length}
+                  onClick={() => setHiddenCharts([])}
+                >
+                  Mostrar todos
+                </button>
+              </fieldset>
+              {projects.isError && (
+                <p role="status">{projects.error.message}</p>
+              )}
+            </PopoverContent>
+          </Popover>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() =>
+              void Promise.all([
+                refresh(),
+                ...(converting ? [quote.refetch()] : []),
+              ])
+            }
+            disabled={refreshing || (converting && quote.isFetching)}
+            aria-label="Atualizar relatórios da OpenAI"
+          >
+            <RefreshCw size={13} className={refreshing ? "animate-spin" : ""} />
+            <span>{refreshing ? "Atualizando" : "Atualizar"}</span>
+          </Button>
+          <Button
+            variant="outline"
+            size="icon"
+            onClick={() => void toggleFullscreen()}
+            aria-label={fullscreen ? "Sair da tela cheia" : "Ativar tela cheia"}
+          >
+            {fullscreen ? <Minimize2 size={14} /> : <Expand size={14} />}
+          </Button>
+          <Button variant="outline" size="sm" asChild>
+            <Link href="/">
+              <ArrowLeft size={13} />
+              <span>Dashboard</span>
+            </Link>
+          </Button>
         </div>
       </header>
-
+      <div className="openai-status">
+        <div>
+          <span
+            className={
+              report.isError || available < badges ? "is-warning" : "is-ready"
+            }
+          >
+            <i />
+            {data
+              ? `${available}/${badges} fontes disponíveis`
+              : "Conectando à OpenAI"}
+          </span>
+          <span>
+            <ShieldCheck size={11} />
+            Acesso administrativo
+          </span>
+          {converting && (
+            <span className={quote.isError ? "is-warning" : "is-ready"}>
+              <ValueHint
+                text={
+                  quoteError ||
+                  `${exchangeNote || "Consultando cotação USD/BRL…"}${quote.isError ? " Cotação desatualizada: última consulta falhou; mantida a taxa anterior." : ""}`
+                }
+              >
+                {quoteLoading
+                  ? "Câmbio: consultando…"
+                  : quote.isError
+                    ? "Câmbio: atenção à atualização"
+                    : "USD → BRL · referência · 5 min"}
+              </ValueHint>
+            </span>
+          )}
+          {(browserMessage || report.isError) && (
+            <ValueHint
+              text={
+                browserMessage ||
+                `${report.error?.message} Dados mantidos; podem estar desatualizados.`
+              }
+            >
+              Atenção à atualização
+            </ValueHint>
+          )}
+        </div>
+        <div>
+          <VolumeX size={11} />
+          <span>Silencioso</span>
+          <span>
+            Consulta: {data ? fullTime(data.fetchedAt) : "—"} (Manaus)
+          </span>
+          <span>
+            {visible ? "Atualização a cada 60 s" : "Atualização pausada"}
+          </span>
+        </div>
+      </div>
       <main
         id="openai-content"
         tabIndex={-1}
-        className="openai-content w-full min-w-0 space-y-5 p-3 pb-8 outline-none sm:p-5 lg:p-6"
+        className="openai-content"
+        data-has-charts={layout.visible.length > 0}
       >
-        <div className="openai-status flex flex-wrap items-center justify-between gap-2 text-[11px]">
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-            <span
-              className={`inline-flex items-center gap-2 ${report.isError || anyError ? "text-amber-300" : data ? "text-emerald-300" : "text-slate-400"}`}
-            >
-              <span
-                className={`h-1.5 w-1.5 rounded-full ${report.isError || anyError ? "bg-amber-400" : data ? "bg-emerald-400" : "bg-slate-500"}`}
-                aria-hidden="true"
-              />
-              {report.isError
-                ? "Falha na atualização"
-                : data
-                  ? `${available}/${sourceCount} fontes disponíveis`
-                  : "Conectando à OpenAI"}
-            </span>
-            <span className="inline-flex items-center gap-1.5 text-slate-400">
-              <ShieldCheck className="h-3.5 w-3.5" aria-hidden="true" />
-              Acesso administrativo
-            </span>
-          </div>
-          <p className="text-slate-400">
-            {data
-              ? `Consulta: ${formatTime(data.fetchedAt)} (Manaus)`
-              : "Aguardando primeira consulta"}
-            <span className="mx-2 text-slate-600">·</span>
-            {visible
-              ? "Atualização a cada 60 s"
-              : "Atualização pausada nesta aba"}
-          </p>
-        </div>
-
-        {(browserMessage || report.isError) && (
-          <div
-            role="alert"
-            className="flex items-start gap-2 rounded-xl border border-amber-400/20 bg-amber-400/5 p-3 text-sm text-amber-200"
-          >
-            <AlertCircle
-              className="mt-0.5 h-4 w-4 shrink-0"
-              aria-hidden="true"
-            />
-            <p>
-              {browserMessage || report.error?.message}
-              {report.isError &&
-                data &&
-                " Os dados da última consulta foram mantidos e podem estar desatualizados."}
-            </p>
-          </div>
-        )}
-
-        <div className="openai-overview">
-          <div>
-            <p className="openai-eyebrow">Finanças & operação</p>
-            <h2>Visão executiva</h2>
-          </div>
-          <div className="openai-scope">
-            <span>
-              <CalendarDays
-                className="h-3.5 w-3.5 shrink-0"
-                aria-hidden="true"
-              />
-              {filters.startDate.split("-").reverse().join("/")} —{" "}
-              {filters.endDate.split("-").reverse().join("/")}{" "}
-              <span className="text-slate-400">UTC</span>
-            </span>
-            <span>
-              <Layers3 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-              <span className="min-w-0 break-words">
-                {filters.projectId
-                  ? projectName(filters.projectId)
-                  : "Toda a organização"}
-              </span>
-            </span>
-            {data && !report.isError && !anyError && (
-              <span>
-                <CheckCircle2
-                  className="h-3.5 w-3.5 shrink-0 text-emerald-300"
-                  aria-hidden="true"
-                />
-                Dados consolidados
-              </span>
-            )}
-          </div>
-        </div>
-
-        <div className="openai-kpis grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+        <div className="openai-kpis">
           <MonitorKpi
-            label="Gasto no período"
-            value={
-              costsOk
-                ? data.costs.totals.length
-                  ? data.costs.totals.map((total) => (
-                      <span key={total.currency} className="block">
-                        {moneyFormat(total.amount, total.currency)}
-                      </span>
-                    ))
-                  : "—"
-                : "—"
-            }
+            label="Gasto no mês"
+            value={costsOk ? moneyFormat(total, currency) : "—"}
             hint={
-              costsOk
-                ? data.costs.totals.length
-                  ? "Custos informados pela OpenAI"
-                  : "Nenhuma cobrança no período"
-                : "Dados financeiros indisponíveis"
+              converting
+                ? "Referência em reais · cotação atual"
+                : "Custos informados pela OpenAI"
             }
-            icon={<Coins className="h-4 w-4" />}
-            loading={report.isPending}
-            accent="emerald"
+            badge={converting ? "Convertido" : "Realizado"}
+            icon={<Coins size={13} />}
+            loading={report.isPending || quoteLoading}
             featured
-            badge="Realizado"
           />
           <MonitorKpi
-            label="Projeção até o fim do mês"
+            label="Gasto de hoje · UTC"
             value={
-              projection?.length
-                ? projection.map((total) => (
-                    <span key={total.currency} className="block">
-                      {moneyFormat(total.amount, total.currency)}
-                    </span>
-                  ))
-                : "—"
+              dayCost !== null
+                ? moneyFormat(dayCost, currency)
+                : costsOk
+                  ? "Em processamento"
+                  : "—"
             }
-            hint={
-              monthlyReport.isError
-                ? "Estimativa desatualizada · tente atualizar"
-                : monthlyReport.data?.costs.status === "error"
-                  ? "Custos do mês atual indisponíveis"
-                  : projection?.length
-                    ? `Média de ${projection[0].elapsedDays} dias completos do mês atual`
-                    : monthElapsedDays < 1
-                      ? "Disponível após o primeiro dia completo do mês"
-                      : monthlyReport.isPending
-                        ? "Consultando custos do mês atual"
-                        : "Sem dados de cobrança para estimar"
-            }
-            icon={<TrendingUp className="h-4 w-4" />}
-            loading={monthlyReport.isPending}
-            accent="cyan"
+            hint={dateLabel(today)}
+            badge="Parcial"
+            icon={<CalendarDays size={13} />}
+            loading={report.isPending || quoteLoading}
             featured
+          />
+          <MonitorKpi
+            label="Projeção do mês"
+            value={projection ? moneyFormat(projection.amount, currency) : "—"}
+            hint={
+              projection
+                ? `Base: ${projection.elapsedDays} dias fechados`
+                : "Aguardando dias completos"
+            }
             badge="Estimativa"
+            icon={<TrendingUp size={13} />}
+            loading={report.isPending || quoteLoading}
+            featured
           />
           <MonitorKpi
             label="Tokens de entrada"
             value={
-              usageOk ? numberFormat(consumption.totals.input_tokens ?? 0) : "—"
+              usageOk ? numberFormat(source.totals.input_tokens ?? 0) : "—"
             }
-            hint="Conversações · inclui tokens em cache"
-            icon={<ArrowDownToLine className="h-4 w-4" />}
+            hint="Conversações · inclui cache"
+            icon={<ArrowDownToLine size={13} />}
             loading={report.isPending}
           />
           <MonitorKpi
             label="Tokens de saída"
             value={
-              usageOk
-                ? numberFormat(consumption.totals.output_tokens ?? 0)
-                : "—"
+              usageOk ? numberFormat(source.totals.output_tokens ?? 0) : "—"
             }
-            hint="Conversações · saída dos modelos"
-            icon={<ArrowUpFromLine className="h-4 w-4" />}
+            hint="Conversações · saídas dos modelos"
+            icon={<ArrowUpFromLine size={13} />}
             loading={report.isPending}
           />
           <MonitorKpi
             label="Tokens em cache"
             value={
               usageOk
-                ? numberFormat(consumption.totals.input_cached_tokens ?? 0)
+                ? numberFormat(source.totals.input_cached_tokens ?? 0)
                 : "—"
             }
-            hint="Já contabilizados nos tokens de entrada"
-            icon={<Database className="h-4 w-4" />}
+            hint="Já contabilizados na entrada"
+            icon={<Database size={13} />}
             loading={report.isPending}
-            accent="emerald"
           />
         </div>
-
-        <div className="openai-charts grid min-w-0 gap-4 xl:grid-cols-2">
-          <MonitorPanel
-            title="Evolução dos custos"
-            description="Gastos diários comparados com o mês anterior"
-            icon={<Coins className="h-4 w-4" />}
-            action={
-              <div className="openai-cost-heading-actions">
-                {data && (
-                  <OpenAICostChange
-                    points={series}
-                    currency={currency}
-                    pending={comparison.isPending}
-                    error={comparison.hasError || !costsOk}
-                  />
-                )}
-                {peak && (
-                  <span
-                    className="openai-cost-peak"
-                    aria-label={`Pico do período em ${peak.date.split("-").reverse().join("/")}: ${moneyFormat(peak.cost, currency)}`}
-                  >
-                    <TrendingUp className="h-3.5 w-3.5" aria-hidden="true" />
-                    <span>
-                      Pico atual · {peak.date.slice(8, 10)}/{peak.date.slice(5, 7)}
-                    </span>
-                    <strong>{moneyFormat(peak.cost, currency)}</strong>
-                  </span>
-                )}
-                {currencies.length > 1 ? (
-                  <select
-                    className={`${fieldClass} !h-8 !w-auto !text-xs`}
-                    aria-label="Moeda do gráfico de custos"
-                    value={currency}
-                    onChange={(event) => setCurrencyChoice(event.target.value)}
-                  >
-                    {currencies.map((item) => (
-                      <option key={item}>{item}</option>
-                    ))}
-                  </select>
-                ) : (
-                  <span className="openai-panel-tag">
-                    {currencies.length ? currency : "UTC"} · DIÁRIO
-                  </span>
-                )}
-              </div>
+        {!!layout.visible.length && (
+          <div
+            className="openai-charts"
+            style={
+              { "--openai-chart-columns": layout.columns } as CSSProperties
             }
           >
-            <SourceMessage
-              source={data?.costs}
-              loading={
-                report.isPending ||
-                (costsOk && !data.costs.totals.length && comparison.isPending)
-              }
-              empty={costsOk && !hasCostSeries && !comparison.isPending}
-            />
-            {hasCostSeries && (
-              <OpenAICostChart
-                points={series}
-                currency={currency}
-                comparisonPending={comparison.isPending}
-                comparisonError={comparison.hasError}
-              />
-            )}
-          </MonitorPanel>
-          <MonitorPanel
-            title="Top 10 projetos por gasto"
-            action={
-              costsOk ? (
-                <span className="openai-panel-tag">
-                  {topProjects.length} PROJETOS
-                </span>
-              ) : undefined
-            }
-            description={`Maiores custos no período selecionado · ${currency}`}
-            icon={<BarChart3 className="h-4 w-4" />}
-          >
-            <SourceMessage
-              source={data?.costs}
-              loading={report.isPending}
-              empty={costsOk && !topProjects.length}
-            />
-            {costsOk && !!topProjects.length && (
-              <ol
-                aria-label="Top 10 projetos por gasto"
-                className="openai-ranking flex min-h-64 flex-col justify-center gap-5"
-              >
-                {topProjects.map((project, index) => (
-                  <li key={project.projectId} className="min-w-0">
-                    <div className="mb-2 flex min-w-0 items-start justify-between gap-3 text-xs">
-                      <span className="openai-rank-name flex min-w-0 items-start gap-2.5">
-                        <span className="openai-rank-number font-mono text-slate-500">
-                          {String(index + 1).padStart(2, "0")}
-                        </span>
-                        <span className="break-words font-medium text-slate-200">
-                          {projectName(project.projectId)}
-                        </span>
-                      </span>
-                      <span className="openai-rank-value shrink-0 font-mono font-semibold text-cyan-300">
-                        {moneyFormat(project.amount, currency)}
-                      </span>
-                    </div>
-                    <div
-                      className="openai-rank-track h-2 overflow-hidden rounded-full bg-slate-800"
-                      aria-hidden="true"
-                    >
-                      <div
-                        className={`openai-rank-fill h-full rounded-full ${index === 0 ? "bg-cyan-400" : "bg-emerald-400/80"}`}
-                        style={{
-                          width: `${(project.amount / topProjects[0].amount) * 100}%`,
-                        }}
-                      />
-                    </div>
-                  </li>
-                ))}
-              </ol>
-            )}
-            {costsOk &&
-              data.costs.rows.some(
-                (row) =>
-                  row.currency === currency &&
-                  !row.projectId &&
-                  Number(row.amount) !== 0,
-              ) && (
-                <p className="mt-3 text-[11px] text-slate-400">
-                  Cobranças sem projeto atribuído não entram no ranking.
-                </p>
-              )}
-          </MonitorPanel>
-        </div>
-
-        {data && (
-          <details className="openai-daily rounded-xl border border-slate-800/80 bg-[#0b1220] p-4">
-            <summary className="cursor-pointer text-xs font-medium text-slate-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400">
-              Ver dados diários · UTC
-            </summary>
-            <div className="mt-4">
-              <MonitorTable
-                label="Dados diários de custos e tokens"
-                headers={[
-                  "Data (UTC)",
-                  `Custo (${currency})`,
-                  "Data anterior (UTC)",
-                  `Custo anterior (${currency})`,
-                  "Entrada",
-                  "Saída",
-                ]}
-              >
-                {series.map((day) => (
-                  <tr key={day.date}>
-                    <th
-                      scope="row"
-                      className="whitespace-nowrap px-3 py-3 font-normal"
-                    >
-                      {day.label}/{day.date.slice(0, 4)}
-                    </th>
-                    <td className={cell}>
-                      {day.cost === null
-                        ? day.costPending
-                          ? "Em processamento"
-                          : "Indisponível"
-                        : costsOk && !currencies.length
-                          ? "Sem cobrança"
-                          : moneyFormat(day.cost, currency)}
-                      {day.isPartial && costsOk && (
-                        <span className="mt-1 block font-sans text-[10px] text-amber-200">
-                          Dia em andamento · parcial
-                        </span>
-                      )}
-                    </td>
-                    <td className={cell}>
-                      {day.previousDate
-                        ? day.previousDate.split("-").reverse().join("/")
-                        : "Sem dia equivalente"}
-                    </td>
-                    <td className={cell}>
-                      {day.previousCost === null
-                        ? comparison.isPending && day.previousDate
-                          ? "Carregando…"
-                          : "Indisponível"
-                        : moneyFormat(day.previousCost, currency)}
-                    </td>
-                    <td className={cell}>
-                      {day.input === null
-                        ? "Indisponível"
-                        : numberFormat(day.input)}
-                    </td>
-                    <td className={cell}>
-                      {day.output === null
-                        ? "Indisponível"
-                        : numberFormat(day.output)}
-                    </td>
-                  </tr>
-                ))}
-              </MonitorTable>
-            </div>
-          </details>
-        )}
-
-        <div className="openai-section-label">
-          <span>Detalhamento de uso</span>
-        </div>
-        <div className="grid min-w-0 gap-4 xl:grid-cols-[1.05fr_1fr]">
-          <MonitorPanel
-            title="Consumo por modelo"
-            action={
-              usageOk ? (
-                <span className="openai-panel-tag">
-                  {models.length} MODELOS
-                </span>
-              ) : undefined
-            }
-            description="Conversações · ordenado por quantidade de requisições"
-            icon={<Layers3 className="h-4 w-4" />}
-          >
-            <SourceMessage
-              source={consumption}
-              loading={report.isPending}
-              empty={usageOk && !models.length}
-            />
-            {usageOk && !!models.length && (
-              <MonitorTable
-                label="Consumo de conversações por modelo"
-                headers={[
-                  "Modelo",
-                  "Entrada",
-                  "Saída",
-                  "Cache¹",
-                  "Requisições",
-                ]}
-              >
-                {models.map((model) => (
-                  <tr key={model.model}>
-                    <th
-                      scope="row"
-                      className="min-w-40 max-w-64 break-words px-3 py-3 text-xs font-medium text-slate-200"
-                    >
-                      {model.model}
-                    </th>
-                    <td className={cell}>{numberFormat(model.input)}</td>
-                    <td className={cell}>{numberFormat(model.output)}</td>
-                    <td className={`${cell} text-emerald-300`}>
-                      {numberFormat(model.cached)}
-                    </td>
-                    <td className={`${cell} text-cyan-300`}>
-                      {numberFormat(model.requests)}
-                    </td>
-                  </tr>
-                ))}
-              </MonitorTable>
-            )}
-            <p className="mt-3 text-[11px] leading-relaxed text-slate-400">
-              ¹ O cache faz parte da entrada. As demais categorias são
-              apresentadas separadamente abaixo.
-            </p>
-          </MonitorPanel>
-          <MonitorPanel
-            title="Custos por projeto e cobrança"
-            className="openai-cost-details"
-            action={
-              costsOk ? (
-                <span className="openai-panel-tag">
-                  {data.costs.rows.length} ITENS
-                </span>
-              ) : undefined
-            }
-            description="Itens retornados pela OpenAI · sem estimativa por modelo"
-            icon={<Coins className="h-4 w-4" />}
-          >
-            <SourceMessage
-              source={data?.costs}
-              loading={report.isPending}
-              empty={costsOk && !data.costs.rows.length}
-            />
-            {costsOk && !!data.costs.rows.length && (
-              <MonitorTable
-                label="Custos por projeto e item de cobrança"
-                headers={["Projeto / item de cobrança", "Valor"]}
-              >
-                {data.costs.rows.map((row, index) => (
-                  <tr key={index}>
-                    <th
-                      scope="row"
-                      className="min-w-52 max-w-96 break-words px-3 py-3 font-normal"
-                    >
-                      <span className="block text-slate-200">
-                        {projectName(row.projectId)}
-                      </span>
-                      <span className="mt-1 block text-[11px] text-slate-400">
-                        {row.lineItem || "Item não informado"}
-                      </span>
-                    </th>
-                    <td className={`${cell} text-emerald-300`}>
-                      {moneyFormat(row.amount, row.currency)}
-                    </td>
-                  </tr>
-                ))}
-              </MonitorTable>
-            )}
-          </MonitorPanel>
-        </div>
-
-        <MonitorPanel
-          title="Outras categorias de uso"
-          description="Unidades específicas de cada serviço · métricas independentes das conversações"
-          icon={<Database className="h-4 w-4" />}
-          action={
-            data ? (
-              <>
-                <label htmlFor="openai-category" className="sr-only">
-                  Categoria de uso
-                </label>
-                <select
-                  id="openai-category"
-                  className={`${fieldClass} !h-9 sm:!w-64`}
-                  value={category}
-                  onChange={(event) =>
-                    setCategory(event.target.value as OpenAIUsageCategory)
-                  }
-                >
-                  {data.usage
-                    .filter((source) => source.id !== "completions")
-                    .map((source) => (
-                      <option key={source.id} value={source.id}>
-                        {source.label}
-                        {source.status === "error" ? " · indisponível" : ""}
-                      </option>
-                    ))}
-                </select>
-              </>
-            ) : undefined
-          }
-        >
-          {report.isPending ? (
-            <SourceMessage loading />
-          ) : !data ? (
-            <p className="text-sm text-slate-400">
-              Atualize o relatório para consultar as categorias.
-            </p>
-          ) : (
-            <>
-              <SourceMessage
-                source={selectedCategory}
-                empty={
-                  selectedCategory?.status === "ok" &&
-                  !selectedCategory.rows.length
+            {layout.visible.map((id) => (
+              <DashboardPanel
+                key={id}
+                id={id}
+                title={names[id]}
+                icon={icons[id]}
+                onExpand={() => openPanel(id)}
+                subtitle={
+                  id === "costs"
+                    ? `${currency} · mês anterior tracejado`
+                    : id === "recent"
+                      ? "Conversações · por minuto · Manaus (UTC−4)"
+                      : id === "monthly"
+                        ? `Mês atual · ${currency}`
+                        : `${range.startDate.slice(8)}/${range.startDate.slice(5, 7)} — ${range.endDate.slice(8)}/${range.endDate.slice(5, 7)} · UTC`
                 }
-              />
-              {selectedCategory?.status === "ok" &&
-                !!selectedCategory.rows.length && (
-                  <>
-                    <div className="openai-category-metrics mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                      {metricKeys.map((metric) => (
-                        <div
-                          key={metric}
-                          className="rounded-xl border border-slate-800 bg-slate-950/40 p-3"
-                        >
-                          <p className="text-xs text-slate-400">
-                            {OPENAI_METRICS[metric]}
-                          </p>
-                          <p className="mt-2 font-mono text-xl font-semibold text-cyan-300">
-                            {numberFormat(selectedCategory.totals[metric] ?? 0)}
-                          </p>
-                        </div>
-                      ))}
-                    </div>
-                    <MonitorTable
-                      label={`Detalhamento: ${selectedCategory.label}`}
-                      headers={[
-                        "Projeto / modelo",
-                        ...metricKeys.map((metric) => OPENAI_METRICS[metric]),
-                      ]}
+                action={
+                  id === "ranking" ? (
+                    <select
+                      className="openai-ranking-period"
+                      aria-label="Intervalo do ranking"
+                      value={rankingDays}
+                      onChange={(event) =>
+                        setRankingDays(
+                          Number(event.target.value) as RankingDays,
+                        )
+                      }
                     >
-                      {selectedCategory.rows.map((row, index) => (
-                        <tr key={index}>
-                          <th
-                            scope="row"
-                            className="min-w-48 break-words px-3 py-3 font-normal"
-                          >
-                            <span className="block">
-                              {projectName(row.projectId)}
-                            </span>
-                            {row.model && (
-                              <span className="mt-1 block text-[11px] text-slate-400">
-                                {row.model}
-                              </span>
-                            )}
-                          </th>
-                          {metricKeys.map((metric) => (
-                            <td key={metric} className={cell}>
-                              {row.metrics[metric] === undefined
-                                ? "—"
-                                : numberFormat(row.metrics[metric]!)}
-                            </td>
-                          ))}
-                        </tr>
+                      {([1, 7, 15, 30] as const).map((days) => (
+                        <option key={days} value={days}>
+                          {days} {days === 1 ? "dia" : "dias"}
+                        </option>
                       ))}
-                    </MonitorTable>
-                  </>
-                )}
-            </>
-          )}
-        </MonitorPanel>
-        <footer className="openai-footer flex flex-wrap items-center justify-between gap-2 px-1 text-[11px] leading-relaxed text-slate-400">
-          <p>
-            Os dados refletem o processamento da OpenAI e podem ser atualizados
-            após o uso.
-          </p>
-          <span>Somente leitura · Sem reprodução de áudio</span>
-        </footer>
+                    </select>
+                  ) : undefined
+                }
+              >
+                {panelBody(id)}
+              </DashboardPanel>
+            ))}
+          </div>
+        )}
+        <div className="openai-details">
+          {(["models", "billing", "categories"] as const).map((id) => (
+            <DashboardPanel
+              key={id}
+              id={id}
+              title={names[id]}
+              icon={icons[id]}
+              onExpand={() => openPanel(id)}
+              subtitle={
+                id === "models"
+                  ? "Conversações · mês atual"
+                  : id === "billing"
+                    ? `${converting ? "Referência convertida" : "Custos reais"} · ${currency} · mês atual`
+                    : "Unidades próprias de cada serviço"
+              }
+            >
+              {panelBody(id)}
+            </DashboardPanel>
+          ))}
+        </div>
       </main>
+      <footer className="openai-footer">
+        <span>
+          Dados reais da OpenAI · o dia atual é parcial e pode ser revisado após
+          o uso.
+        </span>
+        <span>Somente leitura · sem áudio</span>
+      </footer>
+      <Dialog
+        open={expanded !== null}
+        onOpenChange={(open) => {
+          if (!open) setExpanded(null);
+        }}
+      >
+        <DialogContent
+          className="openai-dashboard openai-expanded dark"
+          onOpenAutoFocus={(event) => {
+            event.preventDefault();
+            dialogTitle.current?.focus();
+          }}
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            dialogOpener.current?.focus();
+          }}
+        >
+          <DialogHeader>
+            <DialogTitle ref={dialogTitle} tabIndex={-1}>
+              {expanded ? names[expanded] : "Detalhamento"}
+            </DialogTitle>
+            <DialogDescription>
+              {selectedName} ·{" "}
+              {expanded === "recent"
+                ? "Janela móvel das últimas 3 horas · Manaus (UTC−4)"
+                : `${currency}${converting ? " · conversão de referência" : ""} · ${dateLabel(filters.startDate)} — ${dateLabel(today)} UTC`}
+            </DialogDescription>
+          </DialogHeader>
+          <div
+            className={`openai-expanded-body ${expanded === "recent" ? "has-minute-data" : ""}`}
+          >
+            {expanded && panelBody(expanded, true)}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

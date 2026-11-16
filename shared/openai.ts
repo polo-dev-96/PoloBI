@@ -74,6 +74,18 @@ export interface OpenAIReport {
   costs: OpenAICostReport;
   usage: OpenAIUsageReport[];
 }
+export interface OpenAIRecentUsage extends OpenAISourceState {
+  startTime: string;
+  endTime: string;
+  projectId?: string;
+  totals: OpenAIMetrics;
+  series: {
+    startTime: string;
+    endTime: string;
+    partial: boolean;
+    metrics: OpenAIMetrics;
+  }[];
+}
 export interface OpenAIProject {
   id: string;
   name: string;

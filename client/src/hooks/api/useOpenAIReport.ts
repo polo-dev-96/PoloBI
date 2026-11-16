@@ -1,15 +1,27 @@
 import { useCallback, useEffect, useState } from "react";
-import { useQueries, useQuery } from "@tanstack/react-query";
+import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/contexts/AuthContext";
-import type { OpenAIProject, OpenAIReport } from "@shared/openai";
-import { periodDates, previousMonthRanges } from "@/services/openaiReport";
+import type {
+  OpenAICostReport,
+  OpenAIProject,
+  OpenAIRecentUsage,
+  OpenAIReport,
+  OpenAISourceState,
+} from "@shared/openai";
+import {
+  previousMonthRanges,
+  rankingDates,
+  type RankingDays,
+} from "@/services/openaiReport";
 
-export function useOpenAIReport(filters: {
-  startDate: string;
-  endDate: string;
-  projectId: string;
-}) {
+type Filters = { startDate: string; endDate: string; projectId: string };
+
+export function useOpenAIReport(
+  filters: Filters,
+  rankingDays: RankingDays = 7,
+) {
   const { token, logout } = useAuth();
+  const queryClient = useQueryClient();
   const [visible, setVisible] = useState(
     () => document.visibilityState !== "hidden",
   );
@@ -30,86 +42,134 @@ export function useOpenAIReport(filters: {
         throw new Error("Sessão expirada. Entre novamente.");
       }
       const data = await response.json().catch(() => null);
-      if (!response.ok)
+      if (!response.ok || !data)
         throw new Error(
           typeof data?.message === "string"
             ? data.message
             : "Não foi possível consultar a OpenAI.",
         );
-      if (!data)
-        throw new Error(
-          "O servidor retornou uma resposta inválida. Tente atualizar novamente.",
-        );
       return data as T;
     },
     [token, logout],
   );
-  const projects = useQuery({
-    queryKey: ["openai", "projects", token],
-    queryFn: ({ signal }) =>
-      request<{ projects: OpenAIProject[] }>("/api/openai/projects", signal),
+  const options = {
     enabled: !!token,
     staleTime: 60_000,
-    refetchInterval: visible ? 60_000 : false,
+    refetchInterval: visible ? 60_000 : (false as const),
     refetchOnWindowFocus: true,
-  });
-  const readReport = (range: typeof filters, signal: AbortSignal) => {
-    const params = new URLSearchParams({
+    retry: false as const,
+  };
+  const params = (range: Filters) => {
+    const search = new URLSearchParams({
       startDate: range.startDate,
       endDate: range.endDate,
     });
-    if (range.projectId) params.set("projectId", range.projectId);
-    return request<OpenAIReport>(`/api/openai/report?${params}`, signal);
+    if (range.projectId) search.set("projectId", range.projectId);
+    return search;
   };
-  const report = useQuery({
-    queryKey: ["openai", "report", token, filters],
-    queryFn: ({ signal }) => readReport(filters, signal),
-    enabled: !!token,
-    staleTime: 60_000,
-    refetchInterval: visible ? 60_000 : false,
-    refetchOnWindowFocus: true,
+  const available = <T extends OpenAISourceState>(source: T): T => {
+    if (source.status === "error")
+      throw new Error(source.message || "Fonte indisponível. Tente atualizar.");
+    return source;
+  };
+  const projects = useQuery({
+    ...options,
+    queryKey: ["openai", "projects", token],
+    queryFn: ({ signal }) =>
+      request<{ projects: OpenAIProject[] }>("/api/openai/projects", signal),
   });
-  const month = { ...periodDates("month"), projectId: filters.projectId };
-  const usesCurrentReport =
-    filters.startDate === month.startDate && filters.endDate === month.endDate;
-  const monthQuery = useQuery({
-    queryKey: ["openai", "report", token, month],
-    queryFn: ({ signal }) => readReport(month, signal),
-    enabled: !!token && !usesCurrentReport,
-    staleTime: 60_000,
-    refetchInterval: visible ? 60_000 : false,
-    refetchOnWindowFocus: true,
+  const reportKey = ["openai", "report", token, filters];
+  const report = useQuery({
+    ...options,
+    queryKey: reportKey,
+    queryFn: async ({ signal }) => {
+      const next = await request<OpenAIReport>(
+        `/api/openai/report?${params(filters)}`,
+        signal,
+      );
+      const previous = queryClient.getQueryData<OpenAIReport>(reportKey);
+      if (
+        previous &&
+        next.costs.status === "error" &&
+        next.usage.every((source) => source.status === "error")
+      )
+        throw new Error(
+          next.costs.message || "Não foi possível atualizar o relatório.",
+        );
+      return next;
+    },
   });
   const comparisonQueries = useQueries({
     queries: previousMonthRanges(filters.startDate, filters.endDate).map(
-      (range) => {
-        const previous = { ...range, projectId: filters.projectId };
+      (dates) => {
+        const range = { ...dates, projectId: filters.projectId };
         return {
-          queryKey: ["openai", "report", token, previous],
-          queryFn: ({ signal }: { signal: AbortSignal }) =>
-            readReport(previous, signal),
-          enabled: !!token,
-          staleTime: 60_000,
-          refetchInterval: visible ? 60_000 : (false as const),
-          refetchOnWindowFocus: true,
+          ...options,
+          queryKey: ["openai", "costs", token, range],
+          queryFn: async ({ signal }: { signal: AbortSignal }) => ({
+            ...range,
+            projectId: range.projectId || undefined,
+            costs: available(
+              await request<OpenAICostReport>(
+                `/api/openai/costs?${params(range)}`,
+                signal,
+              ),
+            ),
+          }),
         };
       },
     ),
   });
+  const range = {
+    ...rankingDates(rankingDays, new Date(`${filters.endDate}T12:00:00Z`)),
+    projectId: filters.projectId,
+  };
+  const ranking = useQuery({
+    ...options,
+    queryKey: ["openai", "ranking", token, range],
+    queryFn: async ({ signal }) =>
+      available(
+        await request<OpenAICostReport>(
+          `/api/openai/costs?${params(range)}`,
+          signal,
+        ),
+      ),
+  });
+  const recent = useQuery({
+    ...options,
+    queryKey: ["openai", "recent", token, filters.projectId],
+    queryFn: async ({ signal }) => {
+      const search = new URLSearchParams();
+      if (filters.projectId) search.set("projectId", filters.projectId);
+      return available(
+        await request<OpenAIRecentUsage>(
+          `/api/openai/recent-usage?${search}`,
+          signal,
+        ),
+      );
+    },
+  });
   return {
     projects,
     report,
-    monthlyReport: usesCurrentReport ? report : monthQuery,
+    recent,
+    ranking,
+    visible,
     comparison: {
       reports: comparisonQueries.map((query) => query.data),
       isPending: comparisonQueries.some((query) => query.isPending),
-      isFetching: comparisonQueries.some((query) => query.isFetching),
-      hasError: comparisonQueries.some(
-        (query) => query.isError || query.data?.costs.status === "error",
-      ),
-      refetch: () =>
-        Promise.all(comparisonQueries.map((query) => query.refetch())),
+      hasError: comparisonQueries.some((query) => query.isError),
     },
-    visible,
+    refreshing: [projects, report, ranking, recent, ...comparisonQueries].some(
+      (query) => query.isFetching,
+    ),
+    refresh: () =>
+      Promise.all([
+        projects.refetch(),
+        report.refetch(),
+        ranking.refetch(),
+        recent.refetch(),
+        ...comparisonQueries.map((query) => query.refetch()),
+      ]),
   };
 }

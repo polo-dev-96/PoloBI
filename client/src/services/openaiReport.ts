@@ -1,6 +1,7 @@
 import type {
   OpenAICostReport,
   OpenAIReport,
+  OpenAIRecentUsage,
   OpenAIUsageReport,
 } from "@shared/openai";
 
@@ -91,7 +92,9 @@ export function dailySeries(
     const metrics = consumption.get(date);
     const isPartial = date >= today;
     const costPending =
-      report.costs.status === "ok" && isPartial && costs.get(date) === undefined;
+      report.costs.status === "ok" &&
+      isPartial &&
+      costs.get(date) === undefined;
     series.push({
       date,
       label: `${date.slice(8, 10)}/${date.slice(5, 7)}`,
@@ -154,7 +157,10 @@ export type CostComparisonPoint = ReturnType<typeof dailySeries>[number] & {
 
 export function costComparisonSeries(
   report: OpenAIReport,
-  previousReports: readonly (OpenAIReport | undefined)[],
+  previousReports: readonly (
+    | Pick<OpenAIReport, "startDate" | "endDate" | "projectId" | "costs">
+    | undefined
+  )[],
   currency: string,
   now = new Date(),
 ): CostComparisonPoint[] {
@@ -162,7 +168,7 @@ export function costComparisonSeries(
   for (const previous of previousReports) {
     if (
       previous?.costs.status !== "ok" ||
-      previous.projectId !== report.projectId
+      (previous.projectId || undefined) !== (report.projectId || undefined)
     )
       continue;
     const amounts = new Map(
@@ -191,6 +197,56 @@ export function costComparisonSeries(
   });
 }
 
+export type RankingDays = 1 | 7 | 15 | 30;
+export function rankingDates(days: RankingDays, now = new Date()) {
+  const endDate = now.toISOString().slice(0, 10);
+  return {
+    startDate: new Date(Date.parse(endDate) - (days - 1) * DAY)
+      .toISOString()
+      .slice(0, 10),
+    endDate,
+  };
+}
+
+export function currentDayCost(
+  report: OpenAIReport | undefined,
+  currency: string,
+  now = new Date(),
+) {
+  if (report?.costs.status !== "ok") return null;
+  const today = now.toISOString().slice(0, 10);
+  return (
+    report.costs.daily
+      .find((day) => day.date === today)
+      ?.amounts.find((value) => value.currency === currency)?.amount ?? null
+  );
+}
+
+export function recentUsageSeries(report: OpenAIRecentUsage | undefined) {
+  if (report?.status !== "ok") return [];
+  return report.series.map((point) => ({
+    timestamp: Date.parse(point.startTime),
+    endTime: point.endTime,
+    partial: point.partial,
+    requests: point.metrics.num_model_requests ?? 0,
+    input: point.metrics.input_tokens ?? 0,
+    output: point.metrics.output_tokens ?? 0,
+    cached: point.metrics.input_cached_tokens ?? 0,
+  }));
+}
+
+export function tablePage(total: number, page: number, size: number) {
+  const pageSize = Math.max(1, Math.floor(size));
+  const pages = Math.max(1, Math.ceil(total / pageSize));
+  const current = Math.max(0, Math.min(Math.floor(page), pages - 1));
+  return {
+    page: current,
+    pages,
+    start: current * pageSize,
+    end: Math.min(total, (current + 1) * pageSize),
+  };
+}
+
 export function costPeriodChange(
   points: readonly CostComparisonPoint[],
   now = new Date(),
@@ -201,11 +257,16 @@ export function costPeriodChange(
   );
   if (
     !comparable.length ||
-    comparable.some((point) => point.cost === null || point.previousCost === null)
+    comparable.some(
+      (point) => point.cost === null || point.previousCost === null,
+    )
   )
     return null;
   const current = comparable.reduce((sum, point) => sum + point.cost!, 0);
-  const previous = comparable.reduce((sum, point) => sum + point.previousCost!, 0);
+  const previous = comparable.reduce(
+    (sum, point) => sum + point.previousCost!,
+    0,
+  );
   const delta = current - previous;
   return {
     current,

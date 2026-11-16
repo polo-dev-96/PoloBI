@@ -1,3 +1,4 @@
+import { useId } from "react";
 import {
   Area,
   CartesianGrid,
@@ -33,6 +34,7 @@ export function OpenAICostChart({
   comparisonPending: boolean;
   comparisonError: boolean;
 }) {
+  const fillId = useId();
   const peak = dailyCostPeak(points);
   const hasEquivalent = points.some((point) => point.previousDate !== null);
   const currentDay = points.find((point) => point.isPartial);
@@ -58,13 +60,21 @@ export function OpenAICostChart({
             accessibilityLayer
           >
             <defs>
-              <linearGradient id="openai-cost-fill" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="#6ed7c0" stopOpacity={0.23} />
-                <stop offset="100%" stopColor="#6ed7c0" stopOpacity={0.01} />
+              <linearGradient id={fillId} x1="0" y1="0" x2="0" y2="1">
+                <stop
+                  offset="0%"
+                  stopColor="var(--oa-accent)"
+                  stopOpacity={0.2}
+                />
+                <stop
+                  offset="100%"
+                  stopColor="var(--oa-accent)"
+                  stopOpacity={0.01}
+                />
               </linearGradient>
             </defs>
             <CartesianGrid
-              stroke="#233246"
+              stroke="var(--oa-grid)"
               strokeDasharray="3 6"
               vertical={false}
             />
@@ -73,24 +83,27 @@ export function OpenAICostChart({
               tickFormatter={(date: string) =>
                 `${date.slice(8, 10)}/${date.slice(5, 7)}`
               }
-              tick={{ fill: "#94a3b8", fontSize: 10 }}
+              tick={{ fill: "var(--oa-muted)", fontSize: 10 }}
               axisLine={false}
               tickLine={false}
               minTickGap={30}
             />
             <YAxis
-              tick={{ fill: "#94a3b8", fontSize: 10 }}
+              tick={{ fill: "var(--oa-muted)", fontSize: 10 }}
               axisLine={false}
               tickLine={false}
               tickFormatter={compact}
               width={48}
             />
             <Tooltip
-              cursor={{ stroke: "#8198ad", strokeWidth: 1, strokeOpacity: 0.7 }}
+              cursor={{
+                stroke: "var(--oa-comparison)",
+                strokeWidth: 1,
+                strokeOpacity: 0.7,
+              }}
               content={({ active, payload }) => {
                 const point = payload?.[0]?.payload as
-                  | CostComparisonPoint
-                  | undefined;
+                  CostComparisonPoint | undefined;
                 if (!active || !point) return null;
                 return (
                   <div className="openai-cost-tooltip" role="tooltip">
@@ -142,14 +155,14 @@ export function OpenAICostChart({
               name="Período selecionado"
               type="monotone"
               dataKey="cost"
-              stroke="#6ed7c0"
+              stroke="var(--oa-accent)"
               strokeWidth={2.5}
-              fill="url(#openai-cost-fill)"
+              fill={`url(#${fillId})`}
               activeDot={{
                 r: 4,
-                stroke: "#e5fff8",
+                stroke: "var(--oa-text)",
                 strokeWidth: 2,
-                fill: "#6ed7c0",
+                fill: "var(--oa-accent)",
               }}
               isAnimationActive={false}
               connectNulls={false}
@@ -158,15 +171,15 @@ export function OpenAICostChart({
               name="Mês anterior"
               type="monotone"
               dataKey="previousCost"
-              stroke="#9aacc3"
+              stroke="var(--oa-comparison)"
               strokeWidth={2}
               strokeDasharray="4 5"
               dot={false}
               activeDot={{
                 r: 3.5,
-                stroke: "#eef3fa",
+                stroke: "var(--oa-text)",
                 strokeWidth: 2,
-                fill: "#9aacc3",
+                fill: "var(--oa-comparison)",
               }}
               isAnimationActive={false}
               connectNulls={false}
@@ -177,14 +190,14 @@ export function OpenAICostChart({
                 x={peak.date}
                 y={peak.cost}
                 r={5}
-                fill="#6ed7c0"
-                stroke="#e5fff8"
+                fill="var(--oa-accent)"
+                stroke="var(--oa-text)"
                 strokeWidth={2}
                 ifOverflow="extendDomain"
                 label={{
                   value: "Pico atual",
                   position: "top",
-                  fill: "#b6f3e4",
+                  fill: "var(--oa-accent-soft)",
                   fontSize: 10,
                   offset: 11,
                 }}
@@ -213,10 +226,7 @@ export function OpenAICostChart({
         )}
       </div>
       {comparisonMessage && (
-        <p
-          className={`openai-comparison-message ${comparisonError ? "text-amber-200" : "text-slate-400"}`}
-          role="status"
-        >
+        <p className="openai-comparison-message" role="status">
           {comparisonMessage}
         </p>
       )}

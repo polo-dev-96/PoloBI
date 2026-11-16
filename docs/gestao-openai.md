@@ -1,108 +1,121 @@
 # Gestão da OpenAI
 
-Monitoramento somente de leitura em `/gestao-openai`, aberto pelo símbolo da
-OpenAI ao lado do botão da Sala de Gestão. A página é independente dos componentes
-de música, narração, notificações e pausa inteligente. Não há exportação.
+Monitoramento somente de leitura em `/gestao-openai`, aberto em aba nomeada pelo
+símbolo da OpenAI no cabeçalho. A rota é independente de música, narração,
+notificações e pausa inteligente. Não há exportação.
 
-## Apresentação executiva
+## Painel em uma tela
 
-O layout destaca o realizado e a projeção antes das três métricas de tokens.
-O gráfico de custos recebe mais espaço; o ranking e as tabelas usam a mesma
-hierarquia de ícones, títulos, identificadores e cores. Os filtros permanecem no
-cabeçalho, e o conteúdo ocupa a largura disponível inclusive com zoom reduzido.
+A partir de 1366 × 640 pixels de área útil, o layout ocupa a altura do navegador,
+sem rolagem vertical da página, sem escala por zoom e sem esconder painéis.
 
-A identidade visual fica restrita à rota: `client/src/styles/openai-monitoring.css`
-é carregado com a página, sem alterar os estilos do restante do BI. A modernização
-visual modifica essa folha, `client/src/pages/gestao-openai.tsx` e
-`client/src/components/openai-monitoring.tsx`. Mantém consultas, cálculos e contratos.
-Também considera foco visível, regiões de tabela roláveis e redução de movimento.
+- Cabeçalho com projeto, período mensal em UTC, filtros de projeto/moeda em
+  popover, atualizar, tela cheia e retorno ao dashboard.
+- Seis cards: gasto mensal, gasto de hoje (parcial), projeção mensal, tokens de
+  entrada, saída e cache. Valores financeiros usam duas casas decimais.
+- Quatro gráficos: custos mensais comparados com o mês anterior (34% da largura),
+  consumo das últimas três horas (24%) e dois rankings Top 10 (21% cada).
+- O primeiro ranking é mensal. O segundo inicia em sete dias e permite 1, 7, 15
+  ou 30 dias UTC inclusivos, atravessando meses quando necessário.
+- O popover de filtros permite mostrar/ocultar os quatro gráficos. O espaço
+  liberado amplia o gráfico de custos ou, quando oculto, o consumo recente.
+  Somente rankings visíveis dividem a largura igualmente. Se todos forem
+  ocultados, os detalhamentos ocupam a altura livre. A preferência fica salva
+  neste navegador; “Mostrar todos” restaura a apresentação completa.
+- Três painéis inferiores sempre visíveis: modelos, cobranças e outras
+  categorias. Cada tabela calcula quantas linhas cabem com ResizeObserver e tem
+  paginação independente. Atualização preserva a página; filtros reiniciam nela.
+- Cobranças e valores das outras categorias são ordenados numericamente do maior
+  para o menor antes da paginação, inclusive no diálogo ampliado. As métricas
+  mantêm seus rótulos e unidades, sem soma ou conversão entre categorias.
+- Nomes e números compactos têm o valor completo em tooltip, também por teclado.
+  Todos os painéis podem ser ampliados em diálogo. O gráfico mensal oferece
+  “Dados”, com a tabela diária; o consumo ampliado oferece os dados por minuto.
+- Em celular, zoom ampliado e áreas úteis menores, os painéis se reorganizam com
+  rolagem normal para preservar legibilidade. Não há bloqueio global de scroll.
 
-## Executar e acessar
+A folha `client/src/styles/openai-monitoring.css` fica restrita à rota e aos seus
+popovers/diálogos. São mantidos contraste, foco visível, títulos semânticos,
+navegação por teclado e preferência por movimento reduzido.
 
-1. Mantenha `OPENAI_ADMIN_KEY`, `ADMIN_EMAIL` e `ADMIN_PASSWORD` no ambiente do servidor.
-2. Reinicie o servidor com `npm run dev`, ou execute `npm run build` e `npm start` em produção.
-3. Faça login novamente e clique no símbolo da OpenAI no cabeçalho.
+A identidade visual usa fundo preto, superfícies grafite e textos em cinza/branco.
+Vermelho destaca marca, gasto mensal, séries atuais, seleções e primeiro colocado.
+Séries de comparação usam cinza e tracejado; a saída de tokens usa linha clara
+tracejada. Assim, as séries permanecem distinguíveis além da cor. Filtros,
+tooltips, diálogos, foco e carregamento seguem a mesma paleta, sem alterar o
+tema das demais telas. A mudança visual foi conferida em quatro resoluções de
+desktop e no celular, incluindo filtros, teclado e ampliações, sem novos cortes,
+rolagem da página no desktop, erros de JavaScript ou pedidos de áudio.
 
-O comando `npm run dev` usa `tsx watch`, reiniciando o servidor quando seus módulos
-são alterados. Isso evita a interface nova continuar consultando uma instância
-antiga da API. Cada reinício invalida as sessões em memória e exige novo login.
-Em produção, `npm run build` precisa ser seguido do reinício de `npm start`.
+## Consultas e contratos
 
-A chave administrativa nunca é enviada ao navegador. As consultas usam os novos
-endpoints autenticados `GET /api/openai/projects` e `GET /api/openai/report`.
-O relatório recebe `startDate` e `endDate` no formato `YYYY-MM-DD`, inclusive,
-e `projectId` opcional. O intervalo máximo é de 90 dias, sem datas futuras.
+Todos os endpoints exigem uma sessão administrativa válida. A Admin Key continua
+exclusiva do servidor; não foram alterados o ambiente, banco ou integração Milvus.
 
-## Dados e atualização
+| Endpoint | Retorno |
+| --- | --- |
+| `GET /api/openai/projects` | Projetos ativos e arquivados, com paginação completa |
+| `GET /api/openai/report?startDate=...&endDate=...&projectId=...` | Contrato existente: custos e categorias de uso |
+| `GET /api/openai/costs?startDate=...&endDate=...&projectId=...` | `OpenAICostReport`, sem consultar categorias desnecessárias |
+| `GET /api/openai/recent-usage?projectId=...` | `OpenAIRecentUsage`, janela de três horas calculada no servidor |
 
-- Datas e buckets dos relatórios usam UTC. O horário da última consulta usa Manaus.
-- Atualização automática a cada 60 segundos com a aba visível. O servidor compartilha
-  consultas em andamento, mantém cache por 60 segundos e limita a quatro chamadas
-  simultâneas à OpenAI, incluindo todas as páginas.
-- Custos usam soma decimal exata e são separados por moeda, projeto e item de cobrança.
-  A exibição usa duas casas decimais, preservando os valores originais.
-  Não há conversão cambial ou estimativa de custo por modelo.
-- O Top 10 usa os custos líquidos por projeto no período selecionado, separados por
-  moeda; cobranças sem projeto atribuído não entram no ranking.
-  O ranking cresce junto com o gráfico para manter os dez projetos visíveis.
-- O gráfico de custos ocupa aproximadamente 70% da linha no desktop e compara
-  cada dia selecionado com o mesmo dia do mês anterior, no mesmo projeto e moeda.
-  A linha anterior é tracejada; o tooltip e a tabela diária exibem ambas as datas.
-  Dias inexistentes no mês anterior ficam sem ponto, sem repetir o último dia.
-  Falhas não são convertidas em zero. Se o intervalo anterior exceder os 90 dias
-  permitidos pelo endpoint, a consulta é dividida em partes sem sobreposição.
-  O pico positivo do período selecionado tem marcador e resumo de data/valor;
-  em empates, destaca o primeiro dia, sem criar pico para períodos zerados.
-- Ao lado do pico, a variação mostra aumento, redução ou estabilidade em relação
-  aos mesmos dias do mês anterior. Usa somente dias UTC fechados e equivalentes,
-  no projeto e moeda selecionados; hoje fica fora para não comparar um dia parcial
-  com um dia completo. O tooltip acessível por foco exibe os totais, diferença
-  monetária e intervalos. Base zero ou negativa não produz percentual infinito.
-  Dados indisponíveis não viram redução de gastos.
-- A consulta de custos usa `end_time` na meia-noite UTC seguinte à data final,
-  exclusiva, incluindo o bucket parcial de hoje. A referência oficial descreve
-  [custos em buckets diários e limite final exclusivo](https://developers.openai.com/api/reference/resources/admin/subresources/organization/subresources/usage/methods/costs).
-  Na verificação real, encerrar em `now()` omitia hoje; consultar até a próxima
-  meia-noite retornou os custos já publicados. Consumo mantém o limite até agora.
-  Hoje é identificado como parcial no gráfico e tabela; se a OpenAI ainda não
-  publicar um valor, aparece como "Em processamento", sem desenhar um zero falso.
-- A projeção até o fim do mês usa a média dos dias UTC completos do mês atual,
-  incluindo dias sem gasto, multiplicada pelo número real de dias do mês.
-  O resultado não fica abaixo do gasto já observado e segue o filtro de projeto.
-  O card identifica a estimativa e sua base; não há projeção no primeiro dia.
-  Ao consultar outro período, o front-end busca também o mês atual pelo endpoint
-  existente; no mês atual, reaproveita a mesma consulta e seu cache.
-- Os indicadores principais de tokens são de conversações.
-  Tokens em cache já fazem parte da entrada. As outras categorias permanecem separadas.
-- Bytes de armazenamento mostram o último dia retornado, sem somar snapshots de dias diferentes.
-- Falhas são sinalizadas por fonte. Em falhas de atualização HTTP, os dados da última
-  consulta permanecem visíveis com aviso de desatualização. Dados da OpenAI podem ter atraso.
+Datas financeiras são inclusivas, com limite de 90 dias e sem datas futuras.
+`projectId` é opcional. O consumo recente tem início/fim ISO UTC, métricas totais,
+estado de disponibilidade e série com início/fim, indicador parcial e métricas
+por minuto. A janela móvel pode atravessar a meia-noite; seus limites são parciais.
 
-## Sessões
+A referência oficial fornece [custos em buckets diários](https://developers.openai.com/api/reference/resources/admin/subresources/organization/subresources/usage/methods/costs)
+e [consumo de conversações em buckets de um minuto](https://developers.openai.com/api/reference/resources/admin/subresources/organization/subresources/usage/methods/completions).
+O gráfico recente mostra requisições ou tokens, sem estimativa financeira por hora.
 
-O login mantém suas credenciais e formato de resposta. Tokens aleatórios possuem
-validade de 12 horas e são validados no servidor; logout revoga o token e limpa os
-relatórios nas outras abas. Sessões ficam em memória: reiniciar o servidor exige
-novo login. A implantação atual pressupõe um único processo de servidor; múltiplas
-réplicas exigiriam armazenamento compartilhado de sessões e cache.
+## Precisão, atualização e disponibilidade
 
-Corpos das respostas de autenticação e dos relatórios não são registrados no logger HTTP.
-Não foram alterados o banco, os contratos Milvus ou o `.env`.
+- Datas financeiras, rankings e agregações continuam em UTC. Eixo, tooltip e tabela
+  por minuto do consumo recente usam `America/Manaus` (UTC−4), inclusive na virada
+  da data. Os timestamps recebidos da API permanecem intactos. A última consulta
+  também é mostrada em Manaus.
+- O filtro oferece Real (BRL), convertido dos custos USD para apresentação com a
+  cotação de venda (`ask`) da [AwesomeAPI](https://docs.awesomeapi.com.br/api-de-moedas).
+  A consulta pública é feita diretamente pelo navegador, sem cookies, token ou
+  Admin Key, com timeout de 10 segundos. Não exige configuração adicional.
+  TanStack Query mantém cache e atualização de cinco minutos com a aba visível;
+  retomar o foco consulta quando a cotação estiver vencida. “Atualizar” permite
+  consultar imediatamente. O refresh dos dados da OpenAI continua em 60 segundos.
+  Cards, projeção, séries atual/anterior, rankings, cobranças e dados diários usam
+  a mesma cotação atual; os dados USD originais no cache não são alterados.
+  A interface identifica a conversão como referência, mostra fonte, taxa, horário
+  da cotação e da consulta, sem incluir impostos ou taxas. Não é câmbio histórico.
+  Se a atualização falhar, mantém a taxa anterior com aviso. Sem nenhuma cotação,
+  custos em BRL ficam indisponíveis, preservando consumo e a opção USD.
+- Atualização automática a cada 60 segundos, somente com a aba visível.
+  O servidor compartilha consultas em andamento e mantém cache de 60 segundos.
+  Custos são compartilhados entre relatório e consultas isoladas.
+- Custos, consumo recente, projetos e categorias usam o mesmo limite de quatro
+  chamadas externas simultâneas, com paginação integral e controle de 429.
+- Custos usam soma decimal exata; moedas, projetos e itens permanecem separados.
+  Os rankings mostram custos líquidos, abatem créditos e excluem itens sem projeto.
+- O card de hoje reutiliza o bucket do relatório mensal, sem nova chamada.
+  `end_time` dos custos termina na meia-noite seguinte para incluir o bucket atual.
+  Ausência de custo publicado aparece como “Em processamento”, sem zero falso.
+- O gráfico mensal compara datas equivalentes, sem inventar dias inexistentes.
+  Pico destaca o primeiro maior valor positivo; variação considera somente dias
+  fechados equivalentes para não comparar hoje parcial com um dia inteiro.
+- Projeção usa a média dos dias completos do mês × duração do mês, incluindo dias
+  sem gasto. Não fica abaixo do realizado e não é exibida no primeiro dia.
+- Cache já faz parte dos tokens de entrada. Outras categorias mantêm suas unidades.
+  Armazenamento vetorial representa o último snapshot, sem somar retratos diários.
+- Falhas preservam os demais painéis disponíveis. Em falhas de atualização de
+  custos isolados ou consumo recente, o TanStack Query mantém o último resultado
+  e a interface mostra aviso de desatualização. Falhas não viram pontos zerados.
 
-## Arquivos
+## Executar e validar
 
-- Interface e navegação: `client/src/pages/gestao-openai.tsx`,
-  `client/src/components/openai-monitoring.tsx`, `client/src/components/openai-cost-chart.tsx`,
-  `client/src/components/openai-cost-change.tsx`, `client/src/components/app-header.tsx`
-  e `client/src/App.tsx`.
-- Consultas e apresentação: `client/src/hooks/api/useOpenAIReport.ts`,
-  `client/src/services/openaiReport.ts` e `shared/openai.ts`.
-- Integração e sessão: `server/openai.ts`, `server/adminSession.ts`,
-  `server/routes.ts`, `server/index.ts` e `client/src/contexts/AuthContext.tsx`.
-- Testes: `server/openai.test.ts`, `client/src/services/openaiReport.test.ts`;
-  comando `test:openai` adicionado ao `package.json`.
-
-## Validação
+Mantenha as variáveis existentes `OPENAI_ADMIN_KEY`, `ADMIN_EMAIL` e
+`ADMIN_PASSWORD`. Execute `npm run dev` ou `npm run build` e `npm start`.
+O modo dev usa `tsx watch`; mudanças no servidor exigem novo login porque as
+sessões são armazenadas em memória, com validade de 12 horas e revogação no logout.
+Produção exige reiniciar o processo após o build. Logout continua sincronizado
+entre abas. Chaves, tokens e corpos dos relatórios não são registrados nos logs.
 
 ```sh
 npm run test:openai
@@ -112,21 +125,46 @@ npm run check
 npm run build
 ```
 
-Foram verificados os totais financeiros e de consumo contra consultas reais não
-agrupadas da OpenAI. Também foram inspecionados layout em desktop, tablet e celular,
-ausência de rolagem horizontal da página, ausência de requisições de áudio,
-filtros de projeto/período, validação de 90 dias, botão acessível por teclado,
-reutilização da aba nomeada, restauração de sessão, sincronização de logout entre
-abas e acesso sem login. O cabeçalho foi conferido nas larguras de 320, 390, 768,
-1024 e 1536 pixels. A tela também foi conferida até 2300 pixels de largura lógica,
-equivalente à redução de zoom para 67%, ocupando toda a largura disponível.
-Os filtros ficam no cabeçalho e o gráfico de consumo foi substituído pelo Top 10.
-As 12 fontes responderam com sucesso na consulta real.
+Os testes de integração/apresentação abrangem sessão, filtros, paginação, somas,
+cache, concorrência compartilhada, virada UTC, consumo por minuto, falhas parciais
+e respostas 401/403/429. Os 45 testes da integração e apresentação passaram; os
+33 testes existentes também foram validados na implementação do painel.
 
-Resultado: 31 testes da integração e apresentação e 33 testes existentes passaram; build
-de produção concluído. Não foram adicionadas dependências.
+Verificado no navegador: 1366×640, 1366×650, 1366×768, 1536×864 e 1920×1080 sem
+rolagem da página ou cortes; celular sem transbordamento horizontal; filtros,
+paginação, ampliação, silêncio, falha e recuperação do consumo recente.
+Valores conferidos contra as respostas reais, incluindo os quatro intervalos do
+ranking e o gasto do dia. Confirmados foco/restauração dos diálogos, tooltips por
+teclado, todas as categorias, preservação da página, recuperação após falha e um
+ciclo automático de 60 segundos com avanço da janela intradiária. Nenhum erro de
+JavaScript ou pedido de áudio. Build de produção concluído sem novas dependências.
 
-`npm run check` já falhava antes desta implementação em `server/storage.ts`:
-linhas 124, 135, 147–150, 194–195, 230, 233, 236, 239, 247, 274–276, 291 e 312.
-Esses erros envolvem tipos de status, IDs e propriedades do contrato de tickets.
-Esse arquivo não faz parte da alteração.
+O controle de visibilidade foi validado nas 16 combinações de gráficos, com
+persistência após recarregar, restauração, teclado e redistribuição no desktop e
+tablet. Ordenação decrescente conferida com dados reais nas tabelas e diálogos.
+Conversão conferida no navegador com cotação real, ausência de credenciais na
+consulta externa, ciclo registrado de 300.000 ms, falha/recuperação e preservação
+da última taxa. Sem cotação, a interface oferece USD e mantém o consumo visível.
+BRL validado em 1366×650, 1536×864 e celular; horários de Manaus conferidos no
+gráfico e tabela ampliada. Nenhum erro de JavaScript ou pedido de áudio.
+
+`npm run check` mantém os erros preexistentes em `server/storage.ts`, envolvendo
+status, IDs e campos do contrato de tickets (linhas 124, 135, 147–150, 194–195,
+230–239, 247, 274–276, 291 e 312). Esse arquivo não faz parte desta mudança.
+
+## Arquivos principais
+
+- `client/src/pages/gestao-openai.tsx` e `client/src/styles/openai-monitoring.css`:
+  composição do painel e responsividade.
+- `client/src/components/openai-dashboard.tsx`, `openai-recent-chart.tsx`,
+  `openai-cost-chart.tsx`, `openai-cost-change.tsx` e `openai-monitoring.tsx`:
+  painéis, paginação, tooltips, gráficos e indicadores.
+- `client/src/hooks/api/useOpenAIReport.ts` e `client/src/services/openaiReport.ts`:
+  consultas autenticadas e cálculos de apresentação.
+- `client/src/services/openaiDashboard.ts`: preferências de visibilidade,
+  redistribuição dos gráficos e ordenação numérica das tabelas.
+- `client/src/hooks/api/useDollarQuote.ts`, `client/src/services/openaiCurrency.ts`
+  e `client/src/services/openaiTime.ts`: atualização de câmbio, conversão de
+  apresentação e formatação de horários de Manaus.
+- `server/openai.ts` e `shared/openai.ts`: integração e contratos compartilhados.
+- `server/openai.test.ts` e `client/src/services/openaiReport.test.ts`: testes.

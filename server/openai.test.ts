@@ -7,6 +7,7 @@ import { createAdminSessions, adminSessions } from "./adminSession";
 import {
   aggregateCosts,
   aggregateUsage,
+  aggregateRecentUsage,
   createOpenAIService,
   registerOpenAIRoutes,
   reportQuerySchema,
@@ -140,7 +141,11 @@ test("consumo não soma cache novamente e mantém as categorias separadas", () =
 });
 
 test("custos incluem hoje até o limite exclusivo do dia seguinte, mantendo consumo até agora", async () => {
-  const current = { startDate: "2026-01-01", endDate: "2026-01-03", projectId: "proj-a" };
+  const current = {
+    startDate: "2026-01-01",
+    endDate: "2026-01-03",
+    projectId: "proj-a",
+  };
   const tomorrow = Date.parse("2026-01-04") / 1000;
   for (const hour of ["00:05:00", "23:59:00"]) {
     const time = Date.parse(`2026-01-03T${hour}Z`);
@@ -149,11 +154,42 @@ test("custos incluem hoje até o limite exclusivo do dia seguinte, mantendo cons
       now: () => time,
       fetch: mockFetch((url) => {
         const isCost = url.pathname.endsWith("/costs");
-        const historical = url.searchParams.get("end_time") === String(Date.parse("2026-01-03") / 1000);
+        const historical =
+          url.searchParams.get("end_time") ===
+          String(Date.parse("2026-01-03") / 1000);
         assert.equal(url.searchParams.get("project_ids"), "proj-a");
-        assert.equal(url.searchParams.get("end_time"), String(historical ? Date.parse("2026-01-03") / 1000 : isCost ? tomorrow : time / 1000));
-        if (isCost) assert.deepEqual(url.searchParams.getAll("group_by"), ["project_id", "line_item"]);
-        return response({ data: isCost && !historical ? [bucket([{ project_id: "proj-a", amount: { value: "5.921378035", currency: "usd" } }], 2)] : [], has_more: false });
+        assert.equal(
+          url.searchParams.get("end_time"),
+          String(
+            historical
+              ? Date.parse("2026-01-03") / 1000
+              : isCost
+                ? tomorrow
+                : time / 1000,
+          ),
+        );
+        if (isCost)
+          assert.deepEqual(url.searchParams.getAll("group_by"), [
+            "project_id",
+            "line_item",
+          ]);
+        return response({
+          data:
+            isCost && !historical
+              ? [
+                  bucket(
+                    [
+                      {
+                        project_id: "proj-a",
+                        amount: { value: "5.921378035", currency: "usd" },
+                      },
+                    ],
+                    2,
+                  ),
+                ]
+              : [],
+          has_more: false,
+        });
       }),
     });
     const month = await service.report(current);
@@ -343,7 +379,12 @@ test("rotas recusam acesso sem sessão e tokens falsos antes de consultar OpenAI
   assert.ok(address && typeof address !== "string");
   const url = `http://127.0.0.1:${address.port}`;
   try {
-    for (const path of ["/api/openai/projects", "/api/openai/report"]) {
+    for (const path of [
+      "/api/openai/projects",
+      "/api/openai/report",
+      "/api/openai/costs",
+      "/api/openai/recent-usage",
+    ]) {
       assert.equal((await fetch(url + path)).status, 401);
       assert.equal(
         (
@@ -360,11 +401,164 @@ test("rotas recusam acesso sem sessão e tokens falsos antes de consultar OpenAI
     });
     assert.equal(response.status, 400);
     assert.equal(response.headers.get("cache-control"), "no-store");
+    for (const path of [
+      "/api/openai/costs?startDate=invalid",
+      "/api/openai/recent-usage?projectId=bad%20project",
+      "/api/openai/recent-usage?hours=24",
+    ]) {
+      assert.equal(
+        (
+          await fetch(url + path, {
+            headers: { Authorization: `Bearer ${token}` },
+          })
+        ).status,
+        400,
+      );
+    }
     adminSessions.revoke(token);
   } finally {
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
+});
+
+test("consumo recente mantém minutos, cruza a meia-noite e não soma cache à entrada", () => {
+  const end = Date.parse("2026-01-03T01:00:30Z") / 1000;
+  const start = end - 10800;
+  const recent = aggregateRecentUsage(
+    [
+      { start_time: start - 90, results: [{ input_tokens: 999 }] },
+      {
+        start_time: Math.floor(start / 60) * 60,
+        end_time: Math.floor(start / 60) * 60 + 60,
+        results: [
+          {
+            input_tokens: 100,
+            input_cached_tokens: 60,
+            output_tokens: 10,
+            num_model_requests: 2,
+          },
+          { input_tokens: 50, input_cached_tokens: 20, num_model_requests: 1 },
+        ],
+      },
+      {
+        start_time: Math.floor(end / 60) * 60,
+        results: [{ input_tokens: 5, num_model_requests: 1 }],
+      },
+      { start_time: end + 60, results: [{ input_tokens: 999 }] },
+    ],
+    start,
+    end,
+    stamp,
+    "proj-a",
+  );
+  assert.equal(recent.status, "ok");
+  assert.equal(recent.projectId, "proj-a");
+  assert.equal(recent.series.length, 181);
+  assert.equal(recent.startTime, "2026-01-02T22:00:30.000Z");
+  assert.equal(recent.endTime, "2026-01-03T01:00:30.000Z");
+  assert.equal(recent.series[0].partial, true);
+  assert.equal(recent.series[180].partial, true);
+  assert.equal(recent.series[1].partial, false);
+  assert.deepEqual(recent.totals, {
+    input_tokens: 155,
+    input_cached_tokens: 80,
+    output_tokens: 10,
+    num_model_requests: 4,
+  });
+  assert.deepEqual(recent.series[1].metrics, {});
+  assert.equal(aggregateRecentUsage([], start, end, stamp).series.length, 181);
+});
+
+test("novas consultas paginam, compartilham custos com relatório e deduplicam por 60 segundos", async () => {
+  let time = Date.parse(stamp);
+  const paths: string[] = [];
+  const service = createOpenAIService({
+    now: () => time,
+    getKey: () => "test-only",
+    fetch: mockFetch((url) => {
+      paths.push(url.pathname);
+      if (url.searchParams.get("bucket_width") === "1m") {
+        assert.equal(url.searchParams.get("limit"), "1440");
+        assert.equal(url.searchParams.get("project_ids"), "proj-a");
+        assert.equal(
+          Number(url.searchParams.get("end_time")) -
+            Number(url.searchParams.get("start_time")),
+          10800,
+        );
+        const page = url.searchParams.has("page");
+        return response({
+          data: [
+            {
+              start_time: time / 1000 - (page ? 60 : 120),
+              results: [{ input_tokens: page ? 5 : 10, num_model_requests: 1 }],
+            },
+          ],
+          has_more: !page,
+          next_page: page ? null : "second",
+        });
+      }
+      return response({ data: [], has_more: false });
+    }),
+  });
+  const first = service.recentUsage("proj-a");
+  assert.equal(service.recentUsage("proj-a"), first);
+  const recent = await first;
+  assert.equal(recent.totals.input_tokens, 15);
+  assert.equal(paths.length, 2);
+  const cost = service.costs(query);
+  assert.equal(service.costs(query), cost);
+  await cost;
+  assert.equal(paths.length, 3);
+  assert.equal(paths[2], "/v1/organization/costs");
+  await service.report(query);
+  assert.equal(paths.filter((path) => path.endsWith("/costs")).length, 1);
+  time += 59_000;
+  assert.equal(service.recentUsage("proj-a"), first);
+  time += 1001;
+  const refreshed = await service.recentUsage("proj-a");
+  assert.notEqual(refreshed.endTime, recent.endTime);
+  assert.equal(paths.filter((path) => path.endsWith("/completions")).length, 5);
+});
+
+test("custos e consumo recente respeitam juntos o limite de quatro chamadas", async () => {
+  let active = 0;
+  let peak = 0;
+  const service = createOpenAIService({
+    getKey: () => "test-only",
+    now: () => Date.parse(stamp),
+    fetch: mockFetch(async () => {
+      peak = Math.max(peak, ++active);
+      await new Promise((resolve) => setTimeout(resolve, 2));
+      active--;
+      return response({ data: [], has_more: false });
+    }),
+  });
+  await Promise.all([
+    service.report(query),
+    service.costs({ ...query, projectId: "a" }),
+    ...["a", "b", "c", "d"].map((id) => service.recentUsage(id)),
+  ]);
+  assert.equal(peak, 4);
+});
+
+test("falhas intradiárias e financeiras nunca fabricam pontos zerados", async () => {
+  for (const status of [401, 403, 429, 502]) {
+    const service = createOpenAIService({
+      getKey: () => "test-only",
+      now: () => Date.parse(stamp),
+      fetch: mockFetch(() => response({}, status)),
+    });
+    const recent = await service.recentUsage();
+    assert.equal(recent.status, "error");
+    assert.deepEqual(recent.series, []);
+    assert.deepEqual(recent.totals, {});
+    const costs = await service.costs(query);
+    assert.equal(costs.status, "error");
+    assert.deepEqual(costs.daily, []);
+  }
+  const missing = createOpenAIService({ getKey: () => undefined });
+  assert.equal((await missing.recentUsage()).errorCode, "not_configured");
 });
 
 test("login, restauração validada e logout preservam o contrato existente", async () => {

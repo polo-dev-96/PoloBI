@@ -9,12 +9,22 @@ import {
   type OpenAIMoney,
   type OpenAIProject,
   type OpenAIReport,
+  type OpenAIRecentUsage,
   type OpenAIUsageReport,
 } from "../shared/openai";
 import { requireAdmin } from "./adminSession";
 
 const DAY = 86_400_000;
 const TTL = 60_000;
+const projectIdSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(200)
+  .regex(/^[a-zA-Z0-9_-]+$/);
+export const recentUsageQuerySchema = z
+  .object({ projectId: projectIdSchema.optional() })
+  .strict();
 const isoDate = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/)
@@ -29,13 +39,7 @@ export const reportQuerySchema = z
   .object({
     startDate: isoDate,
     endDate: isoDate,
-    projectId: z
-      .string()
-      .trim()
-      .min(1)
-      .max(200)
-      .regex(/^[a-zA-Z0-9_-]+$/)
-      .optional(),
+    projectId: projectIdSchema.optional(),
   })
   .strict()
   .superRefine((value, ctx) => {
@@ -52,6 +56,7 @@ export const reportQuerySchema = z
 type ReportQuery = z.infer<typeof reportQuerySchema>;
 const bucketSchema = z.object({
   start_time: z.number().finite(),
+  end_time: z.number().finite().optional(),
   results: z.array(z.record(z.unknown())),
 });
 const pageSchema = z.object({
@@ -210,6 +215,48 @@ export function aggregateCosts(
   };
 }
 
+export function aggregateRecentUsage(
+  buckets: Bucket[],
+  start: number,
+  end: number,
+  fetchedAt: string,
+  projectId?: string,
+): OpenAIRecentUsage {
+  const byMinute = new Map<number, OpenAIMetrics>();
+  for (const bucket of buckets) {
+    if (
+      bucket.start_time >= end ||
+      (bucket.end_time ?? bucket.start_time + 60) <= start
+    )
+      continue;
+    const minute = Math.floor(bucket.start_time / 60) * 60;
+    const metrics = byMinute.get(minute) ?? {};
+    bucket.results.forEach((result) => addMetrics(metrics, result));
+    byMinute.set(minute, metrics);
+  }
+  const totals: OpenAIMetrics = {};
+  const series: OpenAIRecentUsage["series"] = [];
+  for (let minute = Math.floor(start / 60) * 60; minute < end; minute += 60) {
+    const metrics = byMinute.get(minute) ?? {};
+    addMetrics(totals, metrics);
+    series.push({
+      startTime: new Date(Math.max(start, minute) * 1000).toISOString(),
+      endTime: new Date(Math.min(end, minute + 60) * 1000).toISOString(),
+      partial: minute < start || minute + 60 > end,
+      metrics,
+    });
+  }
+  return {
+    status: "ok",
+    fetchedAt,
+    projectId,
+    startTime: new Date(start * 1000).toISOString(),
+    endTime: new Date(end * 1000).toISOString(),
+    totals,
+    series,
+  };
+}
+
 export function createOpenAIService(
   options: {
     fetch?: typeof fetch;
@@ -290,6 +337,12 @@ export function createOpenAIService(
     });
     groups.forEach((group) => params.append("group_by", group));
     if (query.projectId) params.append("project_ids", query.projectId);
+    return readBuckets(path, params);
+  }
+  async function readBuckets(
+    path: string,
+    params: URLSearchParams,
+  ): Promise<Bucket[]> {
     const all: Bucket[] = [];
     const cursors = new Set<string>();
     for (;;) {
@@ -310,10 +363,90 @@ export function createOpenAIService(
     string,
     { expiresAt: number; value: Promise<OpenAIReport> }
   >();
+  type CacheEntry<T> = { expiresAt: number; value: Promise<T> };
+  const costCache = new Map<string, CacheEntry<OpenAICostReport>>();
+  const recentCache = new Map<string, CacheEntry<OpenAIRecentUsage>>();
+  function cached<T>(
+    entries: Map<string, CacheEntry<T>>,
+    key: string,
+    load: () => Promise<T>,
+  ) {
+    const previous = entries.get(key);
+    if (previous && previous.expiresAt > now()) return previous.value;
+    for (const [id, entry] of Array.from(entries))
+      if (entry.expiresAt <= now()) entries.delete(id);
+    if (entries.size >= 20) entries.delete(entries.keys().next().value!);
+    const value = load();
+    const entry = { expiresAt: Infinity, value };
+    entries.set(key, entry);
+    void value.then(
+      () => {
+        entry.expiresAt = now() + TTL;
+      },
+      () => {
+        entries.delete(key);
+      },
+    );
+    return value;
+  }
+  const stamp = () => new Date(now()).toISOString();
+  function failure(error: unknown) {
+    const code =
+      error instanceof OpenAIServiceError ? error.code : "unavailable";
+    return {
+      status: "error" as const,
+      errorCode: code,
+      message: messages[code],
+      fetchedAt: stamp(),
+    };
+  }
+  function costs(query: ReportQuery): Promise<OpenAICostReport> {
+    const key = JSON.stringify([
+      query.startDate,
+      query.endDate,
+      query.projectId ?? null,
+    ]);
+    return cached(costCache, key, () =>
+      buckets("costs", query, ["project_id", "line_item"])
+        .then((data) => aggregateCosts(data, stamp()))
+        .catch((error): OpenAICostReport => ({
+          ...failure(error),
+          totals: [],
+          daily: [],
+          rows: [],
+        })),
+    );
+  }
   let projectCache:
-    | { expiresAt: number; value: Promise<OpenAIProject[]> }
-    | undefined;
+    { expiresAt: number; value: Promise<OpenAIProject[]> } | undefined;
   return {
+    costs,
+    recentUsage(projectId?: string): Promise<OpenAIRecentUsage> {
+      return cached(recentCache, projectId ?? "", async () => {
+        const end = Math.floor(now() / 1000);
+        const start = end - 3 * 3600;
+        const params = new URLSearchParams({
+          start_time: String(start),
+          end_time: String(end),
+          bucket_width: "1m",
+          limit: "1440",
+        });
+        if (projectId) params.set("project_ids", projectId);
+        try {
+          const data = await readBuckets("usage/completions", params);
+          return aggregateRecentUsage(data, start, end, stamp(), projectId);
+        } catch (error) {
+          return {
+            ...failure(error),
+            projectId,
+            startTime: new Date(start * 1000).toISOString(),
+            endTime: new Date(end * 1000).toISOString(),
+            totals: {},
+            series: [],
+          };
+        }
+      });
+    },
     projects(): Promise<OpenAIProject[]> {
       if (projectCache && projectCache.expiresAt > now())
         return projectCache.value;
@@ -378,28 +511,8 @@ export function createOpenAIService(
         if (entry.expiresAt <= now()) cache.delete(cachedKey);
       if (cache.size >= 20) cache.delete(cache.keys().next().value!);
       const value = (async () => {
-        const stamp = () => new Date(now()).toISOString();
-        const failure = (error: unknown) => {
-          const code =
-            error instanceof OpenAIServiceError ? error.code : "unavailable";
-          return {
-            status: "error" as const,
-            errorCode: code,
-            message: messages[code],
-            fetchedAt: stamp(),
-          };
-        };
-        const [costs, usage] = await Promise.all([
-          buckets("costs", query, ["project_id", "line_item"])
-            .then((data) => aggregateCosts(data, stamp()))
-            .catch(
-              (error): OpenAICostReport => ({
-                ...failure(error),
-                totals: [],
-                daily: [],
-                rows: [],
-              }),
-            ),
+        const [costReport, usage] = await Promise.all([
+          costs(query),
           Promise.all(
             OPENAI_USAGE_CATEGORIES.map(
               async (category): Promise<OpenAIUsageReport> => {
@@ -424,7 +537,7 @@ export function createOpenAIService(
             ),
           ),
         ]);
-        return { ...query, fetchedAt: stamp(), costs, usage };
+        return { ...query, fetchedAt: stamp(), costs: costReport, usage };
       })();
       // Manter a entrada durante consultas longas também evita pedidos duplicados.
       const entry = { expiresAt: Infinity, value };
@@ -442,6 +555,27 @@ export function createOpenAIService(
 
 export function registerOpenAIRoutes(app: Express) {
   const service = createOpenAIService();
+  app.get("/api/openai/costs", requireAdmin, async (req, res) => {
+    const parsed = reportQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      res
+        .status(400)
+        .json({
+          message:
+            "Informe um período válido de até 90 dias, sem datas futuras.",
+        });
+      return;
+    }
+    res.json(await service.costs(parsed.data));
+  });
+  app.get("/api/openai/recent-usage", requireAdmin, async (req, res) => {
+    const parsed = recentUsageQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({ message: "Informe um projeto válido." });
+      return;
+    }
+    res.json(await service.recentUsage(parsed.data.projectId));
+  });
   app.get("/api/openai/projects", requireAdmin, async (_req, res) => {
     try {
       res.json({ projects: await service.projects() });
@@ -456,12 +590,9 @@ export function registerOpenAIRoutes(app: Express) {
   app.get("/api/openai/report", requireAdmin, async (req, res) => {
     const parsed = reportQuerySchema.safeParse(req.query);
     if (!parsed.success) {
-      res
-        .status(400)
-        .json({
-          message:
-            "Informe um período válido de até 90 dias, sem datas futuras.",
-        });
+      res.status(400).json({
+        message: "Informe um período válido de até 90 dias, sem datas futuras.",
+      });
       return;
     }
     try {

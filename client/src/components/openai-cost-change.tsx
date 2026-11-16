@@ -71,7 +71,8 @@ export function OpenAICostChange({
         >
           <span className="openai-cost-change-value">
             <Icon className="h-3.5 w-3.5" aria-hidden="true" />
-            {label} <strong>{change.direction === "equal" ? "" : amount}</strong>
+            {label}{" "}
+            <strong>{change.direction === "equal" ? "" : amount}</strong>
           </span>
           <span className="openai-cost-change-basis">
             vs mês anterior · {change.days}{" "}
@@ -79,7 +80,7 @@ export function OpenAICostChange({
           </span>
         </span>
       </TooltipTrigger>
-      <TooltipContent className="max-w-80 text-xs leading-relaxed">
+      <TooltipContent className="openai-tooltip max-w-80 text-xs leading-relaxed">
         {explanation}
       </TooltipContent>
     </Tooltip>
